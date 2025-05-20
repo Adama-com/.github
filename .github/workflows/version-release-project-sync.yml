@@ -49,20 +49,13 @@ jobs:
             const status = '${{ steps.parse.outputs.status }}';
             const org = 'Adama-com';
             const projectNumber = 1;
-
+            
+            // Step 1: Get project metadata and all fields (basic only, no options)
             const projectData = await github.graphql(`
               query {
                 organization(login: "${org}") {
                   projectV2(number: ${projectNumber}) {
                     id
-                    fields(first: 20) {
-                      nodes {
-                        id
-                        name
-                        dataType
-                        __typename
-                      }
-                    }
                     items(first: 100) {
                       nodes {
                         id
@@ -87,20 +80,26 @@ jobs:
                         }
                       }
                     }
+                    fields(first: 20) {
+                      nodes {
+                        id
+                        name
+                        __typename
+                      }
+                    }
                   }
                 }
               }
             `);
-
+            
             const project = projectData.organization.projectV2;
-            const fields = project.fields.nodes;
-            const fieldMap = Object.fromEntries(fields.map(f => [f.name, f]));
-
-            // Fetch options separately
-            for (const field of fields) {
+            const allFields = project.fields.nodes;
+            
+            // Step 2: fetch options for each single-select field
+            for (const field of allFields) {
               if (field.__typename === 'ProjectV2SingleSelectField') {
-                const response = await github.graphql(`
-                  query($id: ID!) {
+                const result = await github.graphql(`
+                  query ($id: ID!) {
                     node(id: $id) {
                       ... on ProjectV2SingleSelectField {
                         options {
@@ -111,7 +110,7 @@ jobs:
                     }
                   }
                 `, { id: field.id });
-                field.options = response.node.options;
+                field.options = result.node.options;
               }
             }
 
