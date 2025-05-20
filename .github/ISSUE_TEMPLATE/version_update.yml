@@ -1,83 +1,69 @@
-name: "Update Customer Version"
-description: "Use this form to update a customer's version in the global project tracker"
-title: "[Version Update]: "
-labels: ["version-update"]
-assignees:
-  - octocat
-body:
-  - type: markdown
-    attributes:
-      value: |
-        ## Customer Version Update Form
-        This form will update the global customer version tracker.
+name: Process Version Update Form
+on:
+  issues:
+    types: [opened]
 
-  - type: dropdown
-    id: repository
-    attributes:
-      label: "Repository"
-      description: "Which repository is being updated?"
-      options:
-        - "repo-a"
-        - "repo-b"
-        - "repo-c"
-        # Add all your repositories here
-    validations:
-      required: true
-
-  - type: input
-    id: customer-name
-    attributes:
-      label: "Customer Name"
-      description: "Name of the customer receiving this version update"
-      placeholder: "ex. Acme Corporation"
-    validations:
-      required: true
-
-  - type: input
-    id: version-number
-    attributes:
-      label: "Version Number"
-      description: "The specific version being deployed"
-      placeholder: "ex. v1.2.3"
-    validations:
-      required: true
-
-  - type: input
-    id: release-date
-    attributes:
-      label: "Release Date"
-      description: "Date when the update was/will be deployed to the customer"
-      placeholder: "YYYY-MM-DD"
-    validations:
-      required: true
-
-  - type: dropdown
-    id: status
-    attributes:
-      label: "Status"
-      description: "Current status of this version"
-      options:
-        - "Current"
-        - "Upgrade Scheduled"
-        - "Upgrade Needed"
-        - "Critical Update Required"
-    validations:
-      required: true
-
-  - type: input
-    id: deployed-by
-    attributes:
-      label: "Deployed By"
-      description: "Person responsible for this deployment"
-      placeholder: "@github-username"
-    validations:
-      required: true
-
-  - type: textarea
-    id: notes
-    attributes:
-      label: "Notes"
-      description: "Additional information about this deployment"
-      placeholder: "Any special considerations or changes in this version"
-    validations:
-      required: false
+jobs:
+  process-form:
+    if: contains(github.event.issue.labels.*.name, 'version-update')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Process form and update project
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.PROJECT_TOKEN }}
+          script: |
+            // Get the current repository name
+            const repository = context.repo.repo;
+            console.log(`Processing form from repository: ${repository}`);
+            
+            const issue = await github.rest.issues.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number
+            });
+            
+            const issueBody = issue.data.body;
+            
+            // Function to extract fields from the issue body
+            function extractField(body, fieldName) {
+              const regex = new RegExp(`### ${fieldName}\\s*([^#]*)`);
+              const match = body.match(regex);
+              return match ? match[1].trim() : '';
+            }
+            
+            // Extract data from form
+            const customer = extractField(issueBody, 'Customer Name');
+            const version = extractField(issueBody, 'Version Number');
+            const releaseDate = extractField(issueBody, 'Release Date');
+            const status = extractField(issueBody, 'Status');
+            const deployedBy = extractField(issueBody, 'Deployed By');
+            const notes = extractField(issueBody, 'Notes');
+            
+            console.log(`Extracted data for ${customer} in ${repository}: version ${version}`);
+            
+            // Update your project here (implementation depends on your project structure)
+            // ...
+            
+            // Comment on the issue with confirmation
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: `✅ Processed version update for **${customer}** in repository **${repository}**:
+              
+              - Version: ${version}
+              - Release Date: ${releaseDate}
+              - Status: ${status}
+              - Deployed By: ${deployedBy}
+              
+              The global project board has been updated with this information.`
+            });
+            
+            // Close the issue
+            await github.rest.issues.update({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              state: 'closed'
+            });
