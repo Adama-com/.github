@@ -33,7 +33,7 @@ jobs:
           echo "repository=$REPO" >> $GITHUB_OUTPUT
 
       - name: Skip if not Done
-        if: steps.parse.outputs.status != 'Done'
+        if: steps.parse.outputs.status != 'done'
         run: echo "Status is not Done. Exiting."
 
       - name: Sync with GitHub Project (VersionReleases)
@@ -48,16 +48,9 @@ jobs:
             const version = '${{ steps.parse.outputs.version }}';
             const status = '${{ steps.parse.outputs.status }}';
             const org = 'Adama-com';
-            const projectNumber = 1; // Update this if VersionReleases is a different number
+            const projectNumber = 1;
 
-            const { graphql } = require('@octokit/graphql');
-            const gql = graphql.defaults({
-              headers: {
-                authorization: `token ${process.env.GH_TOKEN}`,
-              },
-            });
-
-            const projectData = await gql(`
+            const projectData = await github.graphql(`
               query {
                 organization(login: "${org}") {
                   projectV2(number: ${projectNumber}) {
@@ -148,7 +141,7 @@ jobs:
                   input.value.text = value;
                 }
 
-                await gql(`
+                await github.graphql(`
                   mutation($input: UpdateProjectV2ItemFieldValueInput!) {
                     updateProjectV2ItemFieldValue(input: $input) {
                       projectV2Item {
@@ -165,7 +158,7 @@ jobs:
               await updateFields(match.id);
             } else {
               console.log("No match — creating new item");
-              const newItem = await gql(`
+              const newItem = await github.graphql(`
                 mutation {
                   addProjectV2ItemById(input: {
                     projectId: "${project.id}",
