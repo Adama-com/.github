@@ -19,11 +19,6 @@ jobs:
       - name: Parse form fields
         id: parse
         run: |
-          # Print the raw issue body for debugging
-          echo "Raw issue body:"
-          echo "$ISSUE_BODY"
-          echo "-------------------"
-          
           # Use simpler pattern matching
           BRANCH=$(echo "$ISSUE_BODY" | sed -n '/### Branch/{n;n;p;}' | xargs)
           STATUS=$(echo "$ISSUE_BODY" | sed -n '/### Status/{n;n;p;}' | xargs)
@@ -66,36 +61,50 @@ jobs:
         if: steps.parse.outputs.status != 'done'
         run: echo "Status is not Done. Exiting."
 
-      - name: Add Comment to Issue
+      - name: Create Final Summary
         if: steps.parse.outputs.status == 'done'
         uses: actions/github-script@v7
         with:
           github-token: ${{ github.token }}
           script: |
-            // Directly reference the outputs
             const branch = '${{ steps.parse.outputs.branch }}';
             const version = '${{ steps.parse.outputs.version }}';
             const status = '${{ steps.parse.outputs.status }}';
             const repo = '${{ steps.parse.outputs.repository }}';
             
-            console.log('Values from step outputs:');
+            console.log('Values for summary:');
             console.log(`Branch: "${branch}"`);
             console.log(`Version: "${version}"`);
             console.log(`Status: "${status}"`);
             console.log(`Repository: "${repo}"`);
             
-            // Create comment body
-            const commentBody = `
-            # Version Release Sync
+            // Create a summary comment with direct project link
+            const projectUrl = 'https://github.com/orgs/Adama-com/projects/1';
+            const projectName = 'VersionReleases';
             
-            This issue has been processed by the Version Release Sync workflow with the following details:
+            const commentBody = `
+            # Version Release - ${status.toUpperCase()}
+            
+            This issue has been processed with the following details:
             
             - **Branch:** ${branch}
             - **Version:** ${version}
             - **Status:** ${status}
             - **Repository:** ${repo}
             
-            Since automatic project syncing encountered authorization issues, please manually add this to the appropriate project.
+            ## Project Assignment
+            
+            Due to API permission limitations, please manually add this issue to the [${projectName}](${projectUrl}) project.
+            
+            To do this:
+            1. Go to the [${projectName} project](${projectUrl})
+            2. Click "Add items"
+            3. Search for this issue (#${{ github.event.issue.number }}) and add it
+            4. Set the following values:
+               - Branch: ${branch}
+               - Current Version: ${version} 
+               - Status: ${status}
+               - Repository: ${repo}
             `;
             
             // Add comment to the issue
@@ -106,11 +115,10 @@ jobs:
               body: commentBody
             });
             
-            console.log('Added comment to issue #' + context.issue.number);
+            console.log('Added summary comment to issue #' + context.issue.number);
             
-            // Try to create a label to indicate status
+            // Add status label
             try {
-              // First check if the label exists
               const statusLabel = `status:${status.toLowerCase().replace(/\s+/g, '-')}`;
               
               try {
@@ -158,105 +166,84 @@ jobs:
               console.log(`Error handling labels: ${error.message}`);
             }
             
-            // Try to use GraphQL to add to Projects v2 (one final attempt)
+            // Add branch label if needed
             try {
-              console.log("Attempting to add to projects via GraphQL...");
-              
-              // First get all projects for the organization
-              const projectsQuery = `
-                query {
-                  organization(login: "${context.repo.owner}") {
-                    projectsV2(first: 10) {
-                      nodes {
-                        id
-                        title
-                        number
-                      }
-                    }
-                  }
-                }
-              `;
-              
-              const projectsResult = await github.graphql(projectsQuery);
-              console.log("Projects result:", JSON.stringify(projectsResult, null, 2));
-              
-              if (projectsResult.organization.projectsV2.nodes.length > 0) {
-                const project = projectsResult.organization.projectsV2.nodes[0];
-                console.log(`Found project: ${project.title} (#${project.number})`);
+              if (branch) {
+                const branchLabel = `branch:${branch.toLowerCase().replace(/\s+/g, '-')}`;
                 
-                // Add the issue to the project
-                const addMutation = `
-                  mutation {
-                    addProjectV2ItemById(input: {
-                      projectId: "${project.id}",
-                      contentId: "${context.payload.issue.node_id}"
-                    }) {
-                      item {
-                        id
-                      }
-                    }
-                  }
-                `;
-                
-                const addResult = await github.graphql(addMutation);
-                console.log("Add result:", JSON.stringify(addResult, null, 2));
-                
-                if (addResult.addProjectV2ItemById && addResult.addProjectV2ItemById.item) {
-                  console.log(`Successfully added issue to project ${project.title}`);
+                try {
+                  // Check if label exists
+                  await github.rest.issues.getLabel({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    name: branchLabel
+                  });
                   
-                  // Try to update fields if needed
-                  try {
-                    // First get the fields for this project
-                    const fieldsQuery = `
-                      query {
-                        node(id: "${project.id}") {
-                          ... on ProjectV2 {
-                            fields(first: 20) {
-                              nodes {
-                                ... on ProjectV2Field {
-                                  id
-                                  name
-                                }
-                                ... on ProjectV2SingleSelectField {
-                                  id
-                                  name
-                                  options {
-                                    id
-                                    name
-                                  }
-                                }
-                              }
-                            }
-                          }
-                        }
-                      }
-                    `;
-                    
-                    const fieldsResult = await github.graphql(fieldsQuery);
-                    console.log("Fields result:", JSON.stringify(fieldsResult, null, 2));
-                    
-                    // Add a comment mentioning the project
-                    await github.rest.issues.createComment({
-                      owner: context.repo.owner,
-                      repo: context.repo.repo,
-                      issue_number: context.issue.number,
-                      body: `✅ **Success:** This issue has been automatically added to project "${project.title}" (#${project.number}).`
-                    });
-                  } catch (error) {
-                    console.log("Error getting fields:", error.message);
-                  }
+                  console.log(`Branch label ${branchLabel} exists.`);
+                } catch (error) {
+                  // Create the branch label
+                  await github.rest.issues.createLabel({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    name: branchLabel,
+                    color: 'e99695',
+                    description: `Branch: ${branch}`
+                  });
+                  
+                  console.log(`Created branch label ${branchLabel}`);
                 }
-              } else {
-                console.log("No projects found in organization");
+                
+                // Add the branch label
+                await github.rest.issues.addLabels({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: context.issue.number,
+                  labels: [branchLabel]
+                });
+                
+                console.log(`Added branch label ${branchLabel} to issue #${context.issue.number}`);
               }
             } catch (error) {
-              console.log("Failed to add to project via GraphQL:", error.message);
-              
-              // Add a final notification summarizing what happened
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: context.issue.number,
-                body: `📌 **Workflow Summary:** Added detailed comment and applied status label. Please manually add this issue to your project tracking board.`
-              });
+              console.log(`Error handling branch label: ${error.message}`);
+            }
+            
+            // Add version label if needed
+            try {
+              if (version) {
+                const versionLabel = `version:${version.replace(/\./g, '-')}`;
+                
+                try {
+                  // Check if label exists
+                  await github.rest.issues.getLabel({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    name: versionLabel
+                  });
+                  
+                  console.log(`Version label ${versionLabel} exists.`);
+                } catch (error) {
+                  // Create the version label
+                  await github.rest.issues.createLabel({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    name: versionLabel,
+                    color: '5319e7',
+                    description: `Version: ${version}`
+                  });
+                  
+                  console.log(`Created version label ${versionLabel}`);
+                }
+                
+                // Add the version label
+                await github.rest.issues.addLabels({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: context.issue.number,
+                  labels: [versionLabel]
+                });
+                
+                console.log(`Added version label ${versionLabel} to issue #${context.issue.number}`);
+              }
+            } catch (error) {
+              console.log(`Error handling version label: ${error.message}`);
             }
