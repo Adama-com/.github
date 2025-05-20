@@ -39,7 +39,7 @@ jobs:
       # Use GitHub CLI to find and update project
       - name: Setup GitHub CLI
         if: steps.parse.outputs.status == 'done'
-        uses: cli/cli@v2
+        uses: cli/cli@v2.3.0
 
       - name: Create or Update Project Item
         if: steps.parse.outputs.status == 'done'
