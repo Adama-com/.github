@@ -7,6 +7,9 @@ on:
 jobs:
   sync-release:
     runs-on: ubuntu-latest
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      PROJECTS_PAT: ${{ secrets.PROJECTS_PAT }}
 
     steps:
       - name: Parse issue fields
@@ -31,7 +34,7 @@ jobs:
         if: steps.parse.outputs.status == 'done'
         uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.PROJECTS_PAT }}
+          github-token: ${{ env.PROJECTS_PAT }}
           script: |
             const org = 'Adama-com';
             const projectNumber = 1;
@@ -177,7 +180,7 @@ jobs:
         if: steps.parse.outputs.status == 'done'
         uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          github-token: ${{ env.GITHUB_TOKEN }}
           script: |
             const branch = '${{ steps.parse.outputs.branch }}';
             const version = '${{ steps.parse.outputs.version }}';
