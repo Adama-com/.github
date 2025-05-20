@@ -20,7 +20,7 @@ jobs:
         id: parse
         run: |
           BRANCH=$(echo "$ISSUE_BODY" | grep -A1 '### Branch' | tail -n1 | xargs)
-          STATUS=$(echo "$ISSUE_BODY" | grep -A1 '### Status' | tail -n1 | tr -d '\r' | xargs)
+          STATUS=$(echo "$ISSUE_BODY" | awk '/### Status/{getline; while($0 ~ /^$/) { getline }; print $0 }' | xargs)
           STATUS_LOWER=$(echo "$STATUS" | tr '[:upper:]' '[:lower:]')
           echo "status=$STATUS_LOWER" >> $GITHUB_OUTPUT
 
