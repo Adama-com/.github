@@ -20,7 +20,10 @@ jobs:
         id: parse
         run: |
           BRANCH=$(echo "$ISSUE_BODY" | grep -A1 '### Branch' | tail -n1 | xargs)
-          STATUS=$(echo "$ISSUE_BODY" | grep -A1 '### Status' | tail -n1 | xargs)
+          STATUS=$(echo "$ISSUE_BODY" | grep -A1 '### Status' | tail -n1 | tr -d '\r' | xargs)
+          STATUS_LOWER=$(echo "$STATUS" | tr '[:upper:]' '[:lower:]')
+          echo "status=$STATUS_LOWER" >> $GITHUB_OUTPUT
+
           VERSION=$(echo "$ISSUE_BODY" | grep -A1 '### Version' | tail -n1 | xargs)
           REPO="${{ github.repository }}"
 
@@ -34,7 +37,7 @@ jobs:
         run: echo "Status is not Done. Exiting."
 
       - name: Sync with GitHub Project (VersionReleases)
-        if: steps.parse.outputs.status == 'Done'
+        if: steps.parse.outputs.status == 'done'
         uses: actions/github-script@v7
         env:
           GH_TOKEN: ${{ secrets.PROJECTS_PAT }}
