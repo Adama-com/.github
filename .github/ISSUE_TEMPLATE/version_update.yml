@@ -1,0 +1,83 @@
+name: Update Customer Version
+description: Use this form to update a customer's version in the global project tracker
+title: "[Version Update]: "
+labels: ["version-update"] 
+assignees:
+  - octocat
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## Customer Version Update Form
+        This form will update the global customer version tracker.
+
+  - type: dropdown
+    id: repository
+    attributes:
+      label: Repository
+      description: Which repository is being updated?
+      options:
+        - repo-a
+        - repo-b
+        - repo-c
+        # Add all your repositories here
+    validations:
+      required: true
+
+  - type: input
+    id: customer-name
+    attributes:
+      label: Customer Name
+      description: Name of the customer receiving this version update
+      placeholder: ex. Acme Corporation
+    validations:
+      required: true
+
+  - type: input
+    id: version-number
+    attributes:
+      label: Version Number
+      description: The specific version being deployed
+      placeholder: ex. v1.2.3
+    validations:
+      required: true
+
+  - type: input
+    id: release-date
+    attributes:
+      label: Release Date
+      description: Date when the update was/will be deployed to the customer
+      placeholder: YYYY-MM-DD
+    validations:
+      required: true
+
+  - type: dropdown
+    id: status
+    attributes:
+      label: Status
+      description: Current status of this version
+      options:
+        - Current
+        - Upgrade Scheduled
+        - Upgrade Needed
+        - Critical Update Required
+    validations:
+      required: true
+
+  - type: input
+    id: deployed-by
+    attributes:
+      label: Deployed By
+      description: Person responsible for this deployment
+      placeholder: @github-username
+    validations:
+      required: true
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes
+      description: Additional information about this deployment
+      placeholder: Any special considerations or changes in this version
+    validations:
+      required: false
