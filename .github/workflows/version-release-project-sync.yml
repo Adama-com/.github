@@ -7,22 +7,21 @@ on:
 jobs:
   sync-release:
     runs-on: ubuntu-latest
-    if: contains(join(github.event.issue.labels.*.name, ','), 'release')
 
     steps:
-      - name: Extract data from issue body
+      - name: Extract issue body
         id: extract
         run: |
           echo "ISSUE_BODY<<EOF" >> $GITHUB_ENV
           echo "${{ github.event.issue.body }}" >> $GITHUB_ENV
           echo "EOF" >> $GITHUB_ENV
 
-      - name: Parse fields from issue
+      - name: Parse form fields
         id: parse
         run: |
-          BRANCH=$(echo "${ISSUE_BODY}" | grep -A1 '### Branch' | tail -n1 | xargs)
-          STATUS=$(echo "${ISSUE_BODY}" | grep -A1 '### Status' | tail -n1 | xargs)
-          VERSION=$(echo "${ISSUE_BODY}" | grep -A1 '### Version' | tail -n1 | xargs)
+          BRANCH=$(echo "$ISSUE_BODY" | grep -A1 '### Branch' | tail -n1 | xargs)
+          STATUS=$(echo "$ISSUE_BODY" | grep -A1 '### Status' | tail -n1 | xargs)
+          VERSION=$(echo "$ISSUE_BODY" | grep -A1 '### Version' | tail -n1 | xargs)
           REPO="${{ github.repository }}"
 
           echo "branch=$BRANCH" >> $GITHUB_OUTPUT
@@ -32,41 +31,30 @@ jobs:
 
       - name: Skip if not Done
         if: steps.parse.outputs.status != 'Done'
-        run: echo "Status is not Done. Skipping sync."
+        run: echo "Status is not Done. Exiting."
 
-      - name: Sync with GitHub Project
+      - name: Sync with GitHub Project (VersionReleases)
         if: steps.parse.outputs.status == 'Done'
         uses: actions/github-script@v7
         env:
           GH_TOKEN: ${{ secrets.PROJECTS_PAT }}
         with:
           script: |
-            const { repository, branch, version, status } = {
-              repository: '${{ steps.parse.outputs.repository }}',
-              branch: '${{ steps.parse.outputs.branch }}',
-              version: '${{ steps.parse.outputs.version }}',
-              status: '${{ steps.parse.outputs.status }}'
-            };
-
-            const projectNumber = 1; // VersionReleases project
+            const repo = '${{ steps.parse.outputs.repository }}';
+            const branch = '${{ steps.parse.outputs.branch }}';
+            const version = '${{ steps.parse.outputs.version }}';
+            const status = '${{ steps.parse.outputs.status }}';
             const org = 'Adama-com';
-
-            const fields = {
-              "Branch": branch,
-              "Current Version": version,
-              "Status": status
-            };
+            const projectNumber = 1; // Update this if VersionReleases is a different number
 
             const { graphql } = require('@octokit/graphql');
-
             const gql = graphql.defaults({
               headers: {
                 authorization: `token ${process.env.GH_TOKEN}`,
               },
             });
 
-            // Get project ID and field IDs
-            const projData = await gql(`
+            const projectData = await gql(`
               query {
                 organization(login: "${org}") {
                   projectV2(number: ${projectNumber}) {
@@ -116,85 +104,69 @@ jobs:
               }
             `);
 
-            const project = projData.organization.projectV2;
-            const fieldMap = {};
-            for (const f of project.fields.nodes) {
-              fieldMap[f.name] = f;
-            }
+            const project = projectData.organization.projectV2;
+            const fields = project.fields.nodes;
+            const fieldMap = Object.fromEntries(fields.map(f => [f.name, f]));
 
-            function getOptionId(field, value) {
-              const match = field.options.find(o => o.name === value);
-              return match ? match.id : null;
+            function getOptionId(fieldName, value) {
+              const field = fieldMap[fieldName];
+              return field?.options?.find(opt => opt.name === value)?.id || null;
             }
 
             const match = project.items.nodes.find(item =>
-              item.content?.repository?.nameWithOwner === repository &&
+              item.content?.repository?.nameWithOwner === repo &&
               item.fieldValues.nodes.some(f =>
-                f.option?.name === branch && f.field?.name === 'Branch'
+                f.field?.name === "Branch" && f.option?.name === branch
               )
             );
 
-            const repoOwnerId = (await gql(`
-              query {
-                repository(owner: "${repository.split('/')[0]}", name: "${repository.split('/')[1]}") {
-                  id
-                }
-              }
-            `)).repository.id;
+            async function updateFields(itemId) {
+              for (const [fieldName, value] of Object.entries({
+                "Branch": branch,
+                "Current Version": version,
+                "Status": status,
+                "Repository": repo
+              })) {
+                const field = fieldMap[fieldName];
+                if (!field) continue;
 
-            const createOrUpdate = async (itemId) => {
-              for (const [name, value] of Object.entries(fields)) {
-                const field = fieldMap[name];
+                const input = {
+                  projectId: project.id,
+                  itemId: itemId,
+                  fieldId: field.id,
+                  value: {}
+                };
+
                 if (field.dataType === 'SINGLE_SELECT') {
-                  const optionId = getOptionId(field, value);
+                  const optionId = getOptionId(fieldName, value);
                   if (!optionId) continue;
-                  await gql(`
-                    mutation {
-                      updateProjectV2ItemFieldValue(
-                        input: {
-                          projectId: "${project.id}",
-                          itemId: "${itemId}",
-                          fieldId: "${field.id}",
-                          value: { singleSelectOptionId: "${optionId}" }
-                        }
-                      ) {
-                        projectV2Item {
-                          id
-                        }
-                      }
-                    }
-                  `);
+                  input.value.singleSelectOptionId = optionId;
                 } else if (field.dataType === 'TEXT') {
-                  await gql(`
-                    mutation {
-                      updateProjectV2ItemFieldValue(
-                        input: {
-                          projectId: "${project.id}",
-                          itemId: "${itemId}",
-                          fieldId: "${field.id}",
-                          value: { text: "${value}" }
-                        }
-                      ) {
-                        projectV2Item {
-                          id
-                        }
+                  input.value.text = value;
+                }
+
+                await gql(`
+                  mutation($input: UpdateProjectV2ItemFieldValueInput!) {
+                    updateProjectV2ItemFieldValue(input: $input) {
+                      projectV2Item {
+                        id
                       }
                     }
-                  `);
-                }
+                  }
+                `, { input });
               }
-            };
+            }
 
             if (match) {
-              console.log("Match found, updating...");
-              await createOrUpdate(match.id);
+              console.log("Item found — updating");
+              await updateFields(match.id);
             } else {
-              console.log("No match, creating...");
+              console.log("No match — creating new item");
               const newItem = await gql(`
                 mutation {
-                  addProjectV2ItemByRepository(input: {
+                  addProjectV2ItemById(input: {
                     projectId: "${project.id}",
-                    contentId: "${repoOwnerId}"
+                    contentId: "${{ github.event.issue.node_id }}"
                   }) {
                     item {
                       id
@@ -202,5 +174,5 @@ jobs:
                   }
                 }
               `);
-              await createOrUpdate(newItem.addProjectV2ItemByRepository.item.id);
-            };
+              await updateFields(newItem.addProjectV2ItemById.item.id);
+            }
