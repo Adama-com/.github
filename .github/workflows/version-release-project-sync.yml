@@ -36,416 +36,273 @@ jobs:
         if: steps.parse.outputs.status != 'done'
         run: echo "Status is not Done. Exiting."
 
-      - name: Sync with GitHub Project (VersionReleases)
+      # Use GitHub CLI to find and update project
+      - name: Setup GitHub CLI
         if: steps.parse.outputs.status == 'done'
-        uses: actions/github-script@v7
+        uses: cli/cli@v2
+
+      - name: Create or Update Project Item
+        if: steps.parse.outputs.status == 'done'
         env:
           GH_TOKEN: ${{ secrets.PROJECTS_PAT }}
-        with:
-          script: |
-            const repo = '${{ steps.parse.outputs.repository }}';
-            const branch = '${{ steps.parse.outputs.branch }}';
-            const version = '${{ steps.parse.outputs.version }}';
-            const status = '${{ steps.parse.outputs.status }}';
-            
-            console.log("Finding GitHub Projects...");
-            
-            // First, let's find all projects the token has access to
-            try {
-              // Try user projects first
-              const userProjectsQuery = await github.graphql(`
-                query {
-                  viewer {
-                    login
-                    projectsV2(first: 10) {
-                      nodes {
-                        id
-                        number
-                        title
-                      }
-                    }
+          GITHUB_TOKEN: ${{ secrets.PROJECTS_PAT }}
+          BRANCH: ${{ steps.parse.outputs.branch }}
+          VERSION: ${{ steps.parse.outputs.version }}
+          STATUS: ${{ steps.parse.outputs.status }}
+          REPO: ${{ steps.parse.outputs.repository }}
+          ISSUE_ID: ${{ github.event.issue.node_id }}
+          ORG: "Adama-com"
+        run: |
+          echo "Testing token permissions..."
+          
+          # List organization projects directly since we know the org name
+          echo "Listing organization projects..."
+          gh api graphql -f query='
+            query {
+              organization(login: "'$ORG'") {
+                projectsV2(first: 10) {
+                  nodes {
+                    id
+                    number
+                    title
                   }
                 }
-              `);
-              
-              console.log("Available user projects:", JSON.stringify(userProjectsQuery.viewer.projectsV2.nodes));
-              
-              // If there are user projects, choose the first one or a specific one by title
-              const userProjects = userProjectsQuery.viewer.projectsV2.nodes;
-              const versionReleaseProject = userProjects.find(p => p.title.includes("VersionRelease")) || userProjects[0];
-              
-              if (versionReleaseProject) {
-                console.log(`Using user project: ${versionReleaseProject.title} (${versionReleaseProject.number})`);
-                await processProject(versionReleaseProject.id, "user", userProjectsQuery.viewer.login, versionReleaseProject.number);
-                return;
               }
-            } catch (error) {
-              console.log("Error fetching user projects:", error.message);
             }
-            
-            // Try organization projects if no user projects or user projects failed
-            try {
-              // List organizations the token has access to
-              const orgsQuery = await github.graphql(`
-                query {
-                  viewer {
-                    organizations(first: 10) {
-                      nodes {
-                        login
-                      }
-                    }
-                  }
-                }
-              `);
-              
-              const orgs = orgsQuery.viewer.organizations.nodes;
-              console.log("Organizations with access:", orgs.map(o => o.login));
-              
-              // Check each organization for projects
-              for (const org of orgs) {
-                try {
-                  const orgProjectsQuery = await github.graphql(`
-                    query {
-                      organization(login: "${org.login}") {
-                        projectsV2(first: 10) {
-                          nodes {
-                            id
-                            number
-                            title
-                          }
-                        }
-                      }
-                    }
-                  `);
-                  
-                  const orgProjects = orgProjectsQuery.organization.projectsV2.nodes;
-                  console.log(`Projects in ${org.login}:`, orgProjects.map(p => `${p.title} (#${p.number})`));
-                  
-                  const versionReleaseProject = orgProjects.find(p => p.title.includes("VersionRelease")) || orgProjects[0];
-                  
-                  if (versionReleaseProject) {
-                    console.log(`Using organization project: ${versionReleaseProject.title} (${versionReleaseProject.number}) in ${org.login}`);
-                    await processProject(versionReleaseProject.id, "org", org.login, versionReleaseProject.number);
-                    return;
-                  }
-                } catch (error) {
-                  console.log(`Error fetching projects for ${org.login}:`, error.message);
-                }
-              }
-            } catch (error) {
-              console.log("Error fetching organizations:", error.message);
-            }
-            
-            console.log("No suitable projects found. Please check that the token has the correct permissions.");
-            
-            // Common function to process a project once we've found it
-            async function processProject(projectId, projectType, ownerLogin, projectNumber) {
-              console.log(`Processing project with ID: ${projectId}`);
-              
-              // Get project fields with proper fragment handling
-              let projectQuery;
-              if (projectType === "org") {
-                projectQuery = await github.graphql(`
-                  query {
-                    organization(login: "${ownerLogin}") {
-                      projectV2(number: ${projectNumber}) {
+          ' | tee projects.json
+          
+          # Extract the first project ID, number and title
+          PROJECT_ID=$(jq -r '.data.organization.projectsV2.nodes[0].id' projects.json)
+          PROJECT_NUMBER=$(jq -r '.data.organization.projectsV2.nodes[0].number' projects.json)
+          PROJECT_TITLE=$(jq -r '.data.organization.projectsV2.nodes[0].title' projects.json)
+          
+          echo "Using project: $PROJECT_TITLE (#$PROJECT_NUMBER)"
+          echo "Project ID: $PROJECT_ID"
+          
+          if [ -z "$PROJECT_ID" ] || [ "$PROJECT_ID" = "null" ]; then
+            echo "No projects found. Please check permissions."
+            exit 1
+          fi
+          
+          # Get the fields for this project
+          echo "Getting project fields..."
+          gh api graphql -f query='
+            query {
+              node(id: "'$PROJECT_ID'") {
+                ... on ProjectV2 {
+                  fields(first: 20) {
+                    nodes {
+                      ... on ProjectV2Field {
                         id
-                        fields(first: 20) {
-                          nodes {
-                            ... on ProjectV2Field {
-                              id
-                              name
-                            }
-                            ... on ProjectV2SingleSelectField {
-                              id
-                              name
-                              options {
-                                id
-                                name
-                              }
-                            }
-                          }
-                        }
+                        name
                       }
-                    }
-                  }
-                `);
-              } else {
-                projectQuery = await github.graphql(`
-                  query {
-                    user(login: "${ownerLogin}") {
-                      projectV2(number: ${projectNumber}) {
+                      ... on ProjectV2SingleSelectField {
                         id
-                        fields(first: 20) {
-                          nodes {
-                            ... on ProjectV2Field {
-                              id
-                              name
-                            }
-                            ... on ProjectV2SingleSelectField {
-                              id
-                              name
-                              options {
-                                id
-                                name
-                              }
-                            }
-                          }
-                        }
-                      }
-                    }
-                  }
-                `);
-              }
-              
-              const project = projectType === "org" ? 
-                projectQuery.organization.projectV2 : 
-                projectQuery.user.projectV2;
-              
-              console.log("Project fields:", project.fields.nodes.map(f => f.name));
-              
-              // Build field map
-              const fieldMap = {};
-              project.fields.nodes.forEach(field => {
-                fieldMap[field.name] = field;
-              });
-              
-              // Find existing item or create new one
-              let itemsQuery;
-              if (projectType === "org") {
-                itemsQuery = await github.graphql(`
-                  query {
-                    organization(login: "${ownerLogin}") {
-                      projectV2(number: ${projectNumber}) {
-                        items(first: 100) {
-                          nodes {
-                            id
-                            content {
-                              ... on Issue {
-                                title
-                                repository {
-                                  nameWithOwner
-                                }
-                              }
-                            }
-                            fieldValues(first: 20) {
-                              nodes {
-                                ... on ProjectV2ItemFieldSingleSelectValue {
-                                  field {
-                                    ... on ProjectV2SingleSelectField {
-                                      name
-                                    }
-                                  }
-                                  name
-                                }
-                                ... on ProjectV2ItemFieldTextValue {
-                                  field {
-                                    ... on ProjectV2Field {
-                                      name
-                                    }
-                                  }
-                                  text
-                                }
-                              }
-                            }
-                          }
-                        }
-                      }
-                    }
-                  }
-                `);
-              } else {
-                itemsQuery = await github.graphql(`
-                  query {
-                    user(login: "${ownerLogin}") {
-                      projectV2(number: ${projectNumber}) {
-                        items(first: 100) {
-                          nodes {
-                            id
-                            content {
-                              ... on Issue {
-                                title
-                                repository {
-                                  nameWithOwner
-                                }
-                              }
-                            }
-                            fieldValues(first: 20) {
-                              nodes {
-                                ... on ProjectV2ItemFieldSingleSelectValue {
-                                  field {
-                                    ... on ProjectV2SingleSelectField {
-                                      name
-                                    }
-                                  }
-                                  name
-                                }
-                                ... on ProjectV2ItemFieldTextValue {
-                                  field {
-                                    ... on ProjectV2Field {
-                                      name
-                                    }
-                                  }
-                                  text
-                                }
-                              }
-                            }
-                          }
-                        }
-                      }
-                    }
-                  }
-                `);
-              }
-              
-              const items = (projectType === "org" ? 
-                itemsQuery.organization.projectV2.items.nodes : 
-                itemsQuery.user.projectV2.items.nodes) || [];
-              
-              const match = items.find(item => {
-                if (!item.content?.repository?.nameWithOwner === repo) return false;
-                
-                const branchValue = item.fieldValues.nodes.find(f => 
-                  f.field?.name === 'Branch' && f.name === branch
-                );
-                
-                return !!branchValue;
-              });
-              
-              console.log("Match found:", !!match);
-              
-              // Update fields or create new item
-              let itemId;
-              if (match) {
-                console.log("Item found — updating");
-                itemId = match.id;
-              } else {
-                console.log("No match — creating new item");
-                const newItemMutation = await github.graphql(`
-                  mutation {
-                    addProjectV2ItemById(input: {
-                      projectId: "${projectId}",
-                      contentId: "${{ github.event.issue.node_id }}"
-                    }) {
-                      item {
-                        id
-                      }
-                    }
-                  }
-                `);
-                itemId = newItemMutation.addProjectV2ItemById.item.id;
-              }
-              
-              // Update fields
-              await updateFields(itemId, project, fieldMap);
-            }
-            
-            async function updateFields(itemId, project, fieldMap) {
-              console.log("Updating fields for item:", itemId);
-              
-              // Update Branch
-              const branchField = fieldMap['Branch'];
-              if (branchField && branch) {
-                const branchOption = branchField.options?.find(opt => opt.name === branch);
-                if (branchOption) {
-                  await github.graphql(`
-                    mutation($input: UpdateProjectV2ItemFieldValueInput!) {
-                      updateProjectV2ItemFieldValue(input: $input) {
-                        projectV2Item {
+                        name
+                        options {
                           id
+                          name
                         }
                       }
                     }
-                  `, { 
-                    input: {
-                      projectId: project.id,
-                      itemId: itemId,
-                      fieldId: branchField.id,
-                      value: {
-                        singleSelectOptionId: branchOption.id
-                      }
-                    }
-                  });
-                  console.log("Updated Branch field");
+                  }
                 }
               }
-              
-              // Update Version
-              const versionField = fieldMap['Current Version'];
-              if (versionField && version) {
-                await github.graphql(`
-                  mutation($input: UpdateProjectV2ItemFieldValueInput!) {
-                    updateProjectV2ItemFieldValue(input: $input) {
-                      projectV2Item {
-                        id
-                      }
-                    }
-                  }
-                `, { 
-                  input: {
-                    projectId: project.id,
-                    itemId: itemId,
-                    fieldId: versionField.id,
-                    value: {
-                      text: version
-                    }
-                  }
-                });
-                console.log("Updated Version field");
-              }
-              
-              // Update Status
-              const statusField = fieldMap['Status'];
-              if (statusField && status) {
-                const statusOption = statusField.options?.find(opt => 
-                  opt.name.toLowerCase() === status.toLowerCase()
-                );
-                if (statusOption) {
-                  await github.graphql(`
-                    mutation($input: UpdateProjectV2ItemFieldValueInput!) {
-                      updateProjectV2ItemFieldValue(input: $input) {
-                        projectV2Item {
-                          id
-                        }
-                      }
-                    }
-                  `, { 
-                    input: {
-                      projectId: project.id,
-                      itemId: itemId,
-                      fieldId: statusField.id,
-                      value: {
-                        singleSelectOptionId: statusOption.id
-                      }
-                    }
-                  });
-                  console.log("Updated Status field");
-                }
-              }
-              
-              // Update Repository (if it's a field in your project)
-              const repoField = fieldMap['Repository'];
-              if (repoField && repo) {
-                await github.graphql(`
-                  mutation($input: UpdateProjectV2ItemFieldValueInput!) {
-                    updateProjectV2ItemFieldValue(input: $input) {
-                      projectV2Item {
-                        id
-                      }
-                    }
-                  }
-                `, { 
-                  input: {
-                    projectId: project.id,
-                    itemId: itemId,
-                    fieldId: repoField.id,
-                    value: {
-                      text: repo
-                    }
-                  }
-                });
-                console.log("Updated Repository field");
-              }
-              
-              console.log("Project sync completed successfully");
             }
+          ' | tee fields.json
+          
+          # Extract field IDs
+          VERSION_FIELD_ID=$(jq -r '.data.node.fields.nodes[] | select(.name=="Current Version") | .id' fields.json)
+          
+          # For single select fields we need to find both field ID and option ID
+          BRANCH_FIELD_ID=$(jq -r '.data.node.fields.nodes[] | select(.name=="Branch") | .id' fields.json)
+          STATUS_FIELD_ID=$(jq -r '.data.node.fields.nodes[] | select(.name=="Status") | .id' fields.json)
+          REPO_FIELD_ID=$(jq -r '.data.node.fields.nodes[] | select(.name=="Repository") | .id' fields.json)
+          
+          # Extract options for single select fields
+          BRANCH_OPTIONS=$(jq -r '.data.node.fields.nodes[] | select(.name=="Branch") | .options[]' fields.json 2>/dev/null || echo "")
+          STATUS_OPTIONS=$(jq -r '.data.node.fields.nodes[] | select(.name=="Status") | .options[]' fields.json 2>/dev/null || echo "")
+          
+          echo "Field IDs found:"
+          echo "Branch: $BRANCH_FIELD_ID"
+          echo "Version: $VERSION_FIELD_ID"
+          echo "Status: $STATUS_FIELD_ID"
+          echo "Repository: $REPO_FIELD_ID"
+          
+          # Find the option IDs for branch and status
+          BRANCH_OPTION_ID=""
+          if [ -n "$BRANCH_OPTIONS" ]; then
+            BRANCH_OPTION_ID=$(echo "$BRANCH_OPTIONS" | jq -r 'select(.name=="'$BRANCH'") | .id' 2>/dev/null || echo "")
+            echo "Branch option ID for '$BRANCH': $BRANCH_OPTION_ID"
+          fi
+          
+          STATUS_OPTION_ID=""
+          if [ -n "$STATUS_OPTIONS" ]; then
+            # Convert status to lowercase for case-insensitive matching
+            STATUS_LOWER=$(echo "$STATUS" | tr '[:upper:]' '[:lower:]')
+            STATUS_OPTION_ID=$(echo "$STATUS_OPTIONS" | jq -r 'select(.name|ascii_downcase=="'$STATUS_LOWER'") | .id' 2>/dev/null || echo "")
+            echo "Status option ID for '$STATUS': $STATUS_OPTION_ID"
+          fi
+          
+          # Look for this issue in the project
+          echo "Looking for existing issue in the project..."
+          ISSUE_TITLE="${{ github.event.issue.title }}"
+          
+          gh api graphql -f query='
+            query {
+              node(id: "'$PROJECT_ID'") {
+                ... on ProjectV2 {
+                  items(first: 100) {
+                    nodes {
+                      id
+                      content {
+                        ... on Issue {
+                          title
+                          number
+                          repository {
+                            nameWithOwner
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          ' | tee items.json
+          
+          # Find item ID for this issue
+          ISSUE_NUMBER="${{ github.event.issue.number }}"
+          REPO_NAME="${{ github.repository }}"
+          
+          ITEM_ID=$(jq -r '.data.node.items.nodes[] | select(
+            .content.number=='$ISSUE_NUMBER' and 
+            .content.repository.nameWithOwner=="'$REPO_NAME'"
+          ) | .id' items.json 2>/dev/null || echo "")
+          
+          # If item not found, add it to the project
+          if [ -z "$ITEM_ID" ] || [ "$ITEM_ID" = "null" ]; then
+            echo "Issue not found in project. Adding it..."
+            
+            gh api graphql -f query='
+              mutation {
+                addProjectV2ItemById(input: {
+                  projectId: "'$PROJECT_ID'",
+                  contentId: "'${{ github.event.issue.node_id }}'"
+                }) {
+                  item {
+                    id
+                  }
+                }
+              }
+            ' | tee add_item.json
+            
+            ITEM_ID=$(jq -r '.data.addProjectV2ItemById.item.id' add_item.json)
+            echo "Added issue to project. Item ID: $ITEM_ID"
+          else
+            echo "Found existing issue in project. Item ID: $ITEM_ID"
+          fi
+          
+          # Update fields
+          if [ -n "$ITEM_ID" ] && [ "$ITEM_ID" != "null" ]; then
+            # Update Branch field if we have both field ID and option ID
+            if [ -n "$BRANCH_FIELD_ID" ] && [ -n "$BRANCH_OPTION_ID" ]; then
+              echo "Updating Branch field..."
+              gh api graphql -f query='
+                mutation {
+                  updateProjectV2ItemFieldValue(input: {
+                    projectId: "'$PROJECT_ID'",
+                    itemId: "'$ITEM_ID'",
+                    fieldId: "'$BRANCH_FIELD_ID'",
+                    value: {
+                      singleSelectOptionId: "'$BRANCH_OPTION_ID'"
+                    }
+                  }) {
+                    projectV2Item {
+                      id
+                    }
+                  }
+                }
+              '
+              echo "Branch field updated."
+            else
+              echo "Skipping Branch field update. Missing field ID or option ID."
+            fi
+            
+            # Update Version field
+            if [ -n "$VERSION_FIELD_ID" ]; then
+              echo "Updating Version field..."
+              gh api graphql -f query='
+                mutation {
+                  updateProjectV2ItemFieldValue(input: {
+                    projectId: "'$PROJECT_ID'",
+                    itemId: "'$ITEM_ID'",
+                    fieldId: "'$VERSION_FIELD_ID'",
+                    value: {
+                      text: "'$VERSION'"
+                    }
+                  }) {
+                    projectV2Item {
+                      id
+                    }
+                  }
+                }
+              '
+              echo "Version field updated."
+            else
+              echo "Skipping Version field update. Missing field ID."
+            fi
+            
+            # Update Status field
+            if [ -n "$STATUS_FIELD_ID" ] && [ -n "$STATUS_OPTION_ID" ]; then
+              echo "Updating Status field..."
+              gh api graphql -f query='
+                mutation {
+                  updateProjectV2ItemFieldValue(input: {
+                    projectId: "'$PROJECT_ID'",
+                    itemId: "'$ITEM_ID'",
+                    fieldId: "'$STATUS_FIELD_ID'",
+                    value: {
+                      singleSelectOptionId: "'$STATUS_OPTION_ID'"
+                    }
+                  }) {
+                    projectV2Item {
+                      id
+                    }
+                  }
+                }
+              '
+              echo "Status field updated."
+            else
+              echo "Skipping Status field update. Missing field ID or option ID."
+            fi
+            
+            # Update Repository field
+            if [ -n "$REPO_FIELD_ID" ]; then
+              echo "Updating Repository field..."
+              gh api graphql -f query='
+                mutation {
+                  updateProjectV2ItemFieldValue(input: {
+                    projectId: "'$PROJECT_ID'",
+                    itemId: "'$ITEM_ID'",
+                    fieldId: "'$REPO_FIELD_ID'",
+                    value: {
+                      text: "'$REPO'"
+                    }
+                  }) {
+                    projectV2Item {
+                      id
+                    }
+                  }
+                }
+              '
+              echo "Repository field updated."
+            else
+              echo "Skipping Repository field update. Missing field ID."
+            fi
+            
+            echo "Project sync completed successfully."
+          else
+            echo "Failed to add issue to project. Check permissions."
+            exit 1
+          fi
