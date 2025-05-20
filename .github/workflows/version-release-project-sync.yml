@@ -36,140 +36,99 @@ jobs:
         if: steps.parse.outputs.status != 'done'
         run: echo "Status is not Done. Exiting."
 
-      - name: Sync with GitHub Project
+      - name: Add Comment to Issue
         if: steps.parse.outputs.status == 'done'
-        env:
-          BRANCH: ${{ steps.parse.outputs.branch }}
-          VERSION: ${{ steps.parse.outputs.version }}
-          STATUS: ${{ steps.parse.outputs.status }}
-          REPO: ${{ steps.parse.outputs.repository }}
-          # This is essential for the GitHub CLI to work
-          TOKEN: ${{ secrets.PROJECTS_PAT }}
-          ISSUE_NUMBER: ${{ github.event.issue.number }}
-        run: |
-          echo "Syncing issue to project..."
-          
-          # Create a simple text file with the issue details for the project
-          cat > issue_details.md << EOF
-          # Issue Details
-          
-          - **Branch:** $BRANCH
-          - **Version:** $VERSION
-          - **Status:** $STATUS
-          - **Repository:** $REPO
-          
-          *This card was automatically created by a GitHub Action workflow.*
-          EOF
-          
-          # Try using curl directly with the REST API
-          echo "Trying to add to organization projects using REST API..."
-
-          # Install jq if it's not already installed
-          sudo apt-get install -y jq
-          
-          # Use token to list organization projects
-          echo "Listing organization projects..."
-          PROJECTS_RESPONSE=$(curl -s \
-            -H "Authorization: token $TOKEN" \
-            -H "Accept: application/vnd.github.v3+json" \
-            "https://api.github.com/orgs/Adama-com/projects")
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const branch = '${{ steps.parse.outputs.branch }}';
+            const version = '${{ steps.parse.outputs.version }}';
+            const status = '${{ steps.parse.outputs.status }}';
+            const repo = '${{ steps.parse.outputs.repository }}';
             
-          echo "Projects response:"
-          echo "$PROJECTS_RESPONSE" | jq .
-          
-          # Try to get active projects
-          PROJECT_IDS=$(echo "$PROJECTS_RESPONSE" | jq -r '.[] | select(.state=="open") | .id')
-          
-          if [ -z "$PROJECT_IDS" ]; then
-            echo "No open projects found, trying to add directly to repository projects..."
+            // Create comment body
+            const commentBody = `
+            # Version Release Sync
             
-            # Try repository projects instead
-            REPO_PROJECTS_RESPONSE=$(curl -s \
-              -H "Authorization: token $TOKEN" \
-              -H "Accept: application/vnd.github.v3+json" \
-              "https://api.github.com/repos/$REPO/projects")
+            This issue has been processed by the Version Release Sync workflow with the following details:
+            
+            - **Branch:** ${branch}
+            - **Version:** ${version}
+            - **Status:** ${status}
+            - **Repository:** ${repo}
+            
+            Since automatic project syncing encountered authorization issues, please manually add this to the appropriate project.
+            `;
+            
+            // Add comment to the issue
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: commentBody
+            });
+            
+            console.log('Added comment to issue #' + context.issue.number);
+            
+            // Try to create a label to indicate status
+            try {
+              // First check if the label exists
+              const statusLabel = `status:${status.toLowerCase().replace(/\s+/g, '-')}`;
               
-            echo "Repository projects response:"
-            echo "$REPO_PROJECTS_RESPONSE" | jq .
-            
-            PROJECT_IDS=$(echo "$REPO_PROJECTS_RESPONSE" | jq -r '.[] | select(.state=="open") | .id')
-          fi
-          
-          if [ -z "$PROJECT_IDS" ]; then
-            echo "No open projects found. Creating issue comment instead."
-            
-            # Create an issue comment with the details using curl
-            echo "Adding comment to issue #$ISSUE_NUMBER..."
-            COMMENT_BODY=$(cat issue_details.md)
-            COMMENT_RESPONSE=$(curl -s -X POST \
-              -H "Authorization: token $TOKEN" \
-              -H "Accept: application/vnd.github.v3+json" \
-              -H "Content-Type: application/json" \
-              "https://api.github.com/repos/$REPO/issues/$ISSUE_NUMBER/comments" \
-              -d "{\"body\": $(echo "$COMMENT_BODY" | jq -sR .)}")
-              
-            echo "Comment response:"
-            echo "$COMMENT_RESPONSE" | jq .
-            
-            echo "Added details as a comment on the issue."
-          else
-            echo "Found open projects: $PROJECT_IDS"
-            
-            # For each project, try to add a card
-            for PROJECT_ID in $PROJECT_IDS; do
-              echo "Adding note to project $PROJECT_ID..."
-              
-              # Get columns for this project
-              COLUMNS_RESPONSE=$(curl -s \
-                -H "Authorization: token $TOKEN" \
-                -H "Accept: application/vnd.github.v3+json" \
-                "https://api.github.com/projects/$PROJECT_ID/columns")
+              try {
+                // Try to get the label
+                await github.rest.issues.getLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  name: statusLabel
+                });
                 
-              echo "Columns response:"
-              echo "$COLUMNS_RESPONSE" | jq .
+                console.log(`Label ${statusLabel} exists. Adding to issue...`);
+              } catch (error) {
+                // Label doesn't exist, create it
+                console.log(`Label ${statusLabel} doesn't exist. Creating...`);
+                
+                // Generate a color based on status
+                let color = '0075ca'; // default blue
+                if (status.toLowerCase().includes('done')) {
+                  color = '0e8a16'; // green
+                } else if (status.toLowerCase().includes('progress')) {
+                  color = 'fbca04'; // yellow
+                }
+                
+                await github.rest.issues.createLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  name: statusLabel,
+                  color: color,
+                  description: `Issue with status: ${status}`
+                });
+                
+                console.log(`Created label ${statusLabel}`);
+              }
               
-              # Get first column ID
-              COLUMN_ID=$(echo "$COLUMNS_RESPONSE" | jq -r '.[0].id')
+              // Add the label to the issue
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                labels: [statusLabel]
+              });
               
-              if [ -n "$COLUMN_ID" ]; then
-                echo "Adding card to column $COLUMN_ID..."
-                
-                # Create card with note
-                NOTE_CONTENT=$(cat issue_details.md)
-                CARD_RESPONSE=$(curl -s -X POST \
-                  -H "Authorization: token $TOKEN" \
-                  -H "Accept: application/vnd.github.v3+json" \
-                  -H "Content-Type: application/json" \
-                  "https://api.github.com/projects/columns/$COLUMN_ID/cards" \
-                  -d "{\"note\": $(echo "$NOTE_CONTENT" | jq -sR .)}")
-                  
-                echo "Card creation response:"
-                echo "$CARD_RESPONSE" | jq .
-                
-                CARD_ID=$(echo "$CARD_RESPONSE" | jq -r '.id')
-                
-                if [ -n "$CARD_ID" ] && [ "$CARD_ID" != "null" ]; then
-                  echo "Successfully created card with ID: $CARD_ID"
-                else
-                  echo "Failed to create card. Check response for errors."
-                fi
-              else
-                echo "No columns found for project $PROJECT_ID"
-              fi
-            done
+              console.log(`Added label ${statusLabel} to issue #${context.issue.number}`);
+            } catch (error) {
+              console.log(`Error handling labels: ${error.message}`);
+            }
             
-            # Also add a comment to the issue as a backup
-            echo "Adding comment to issue #$ISSUE_NUMBER as a backup..."
-            COMMENT_BODY=$(cat issue_details.md)
-            COMMENT_RESPONSE=$(curl -s -X POST \
-              -H "Authorization: token $TOKEN" \
-              -H "Accept: application/vnd.github.v3+json" \
-              -H "Content-Type: application/json" \
-              "https://api.github.com/repos/$REPO/issues/$ISSUE_NUMBER/comments" \
-              -d "{\"body\": $(echo "$COMMENT_BODY" | jq -sR .)}")
-              
-            echo "Comment response:"
-            echo "$COMMENT_RESPONSE" | jq .
-          fi
-          
-          echo "Sync completed."
+            // Try to add a final notification summarizing what happened
+            try {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: `📌 **Workflow Summary:** Added detailed comment and applied status label. Please manually add this issue to your project tracking board.`
+              });
+            } catch (error) {
+              console.log('Failed to add summary comment: ' + error.message);
+            }
