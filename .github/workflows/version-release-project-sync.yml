@@ -55,19 +55,20 @@ jobs:
                 projectV2(number: ${projectNumber}) {
                   id
                   fields(first: 20) {
-                    nodes {
-                      id
-                      name
-                      dataType
-                      __typename
-                      options: ... on ProjectV2SingleSelectField {
-                        options {
-                          id
-                          name
-                        }
-                      }
-                    }
-                  }
+                   nodes {
+                     id
+                     name
+                     dataType
+                     __typename
+                     ... on ProjectV2SingleSelectField {
+                       options {
+                         id
+                         name
+                       }
+                     }
+                   }
+                 }
+
                   items(first: 100) {
                     nodes {
                       id
