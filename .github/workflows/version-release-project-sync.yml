@@ -99,8 +99,8 @@ jobs:
               return item.fieldValues.nodes.find(n => n.field?.name === name);
             }
 
-            function getSingleSelectOptionId(field, value) {
-              return github.graphql(`
+            async function getSingleSelectOptionId(field, value) {
+              const result = await github.graphql(`
                 query ($id: ID!) {
                   node(id: $id) {
                     ... on ProjectV2SingleSelectField {
@@ -111,9 +111,8 @@ jobs:
                     }
                   }
                 }
-              `, { id: field.id }).then(res => {
-                return res.node.options.find(opt => opt.name === value)?.id;
-              });
+              `, { id: field.id });
+              return result.node.options.find(opt => opt.name === value)?.id;
             }
 
             const match = items.find(item =>
@@ -182,7 +181,7 @@ jobs:
         if: steps.parse.outputs.status == 'done'
         uses: actions/github-script@v7
         with:
-          github-token: ${{ github.token }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const branch = '${{ steps.parse.outputs.branch }}';
             const version = '${{ steps.parse.outputs.version }}';
