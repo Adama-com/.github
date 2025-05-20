@@ -49,7 +49,6 @@ jobs:
             const status = '${{ steps.parse.outputs.status }}';
             const org = 'Adama-com';
             const projectNumber = 1;
-
             const projectData = await github.graphql(`
               query {
                 organization(login: "${org}") {
@@ -60,7 +59,8 @@ jobs:
                         id
                         name
                         dataType
-                        ... on ProjectV2SingleSelectField {
+                        __typename
+                        ... on ProjectV2SingleSelectFieldConfiguration {
                           options {
                             id
                             name
@@ -81,14 +81,13 @@ jobs:
                         }
                         fieldValues(first: 10) {
                           nodes {
+                            __typename
                             ... on ProjectV2ItemFieldSingleSelectValue {
+                              name
                               field {
-                                ... on ProjectV2SingleSelectField {
+                                ... on ProjectV2SingleSelectFieldConfiguration {
                                   name
                                 }
-                              }
-                              option {
-                                name
                               }
                             }
                           }
@@ -105,15 +104,17 @@ jobs:
             const fieldMap = Object.fromEntries(fields.map(f => [f.name, f]));
 
             function getOptionId(fieldName, value) {
-              const field = fieldMap[fieldName];
+            const field = fieldMap[fieldName];
               return field?.options?.find(opt => opt.name === value)?.id || null;
             }
 
             const match = project.items.nodes.find(item =>
               item.content?.repository?.nameWithOwner === repo &&
               item.fieldValues.nodes.some(f =>
-                f.field?.name === "Branch" && f.option?.name === branch
-              )
+              f.__typename === 'ProjectV2ItemFieldSingleSelectValue' &&
+              f.name === branch &&
+              f.field?.name === 'Branch'
+            )
             );
 
             async function updateFields(itemId) {
