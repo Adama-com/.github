@@ -1,5 +1,5 @@
 name: Sync Version Release to Project
-
+ 
 on:
   issues:
     types: [opened]
