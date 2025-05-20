@@ -1,7 +1,7 @@
 name: Update Customer Version
 description: Use this form to update a customer's version in the global project tracker
 title: "[Version Update]: "
-labels: ["version-update"] 
+labels: ["version-update"]
 assignees:
   - octocat
 body:
