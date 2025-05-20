@@ -39,7 +39,7 @@ jobs:
       - name: Sync with GitHub Project
         if: steps.parse.outputs.status == 'done'
         env:
-          GH_TOKEN: ${{ secrets.PROJECTS_PAT }}
+          GITHUB_TOKEN: ${{ secrets.PROJECTS_PAT }}
           BRANCH: ${{ steps.parse.outputs.branch }}
           VERSION: ${{ steps.parse.outputs.version }}
           STATUS: ${{ steps.parse.outputs.status }}
@@ -49,16 +49,18 @@ jobs:
         run: |
           echo "Testing token permissions..."
           
-          # Function to make GraphQL API calls
+          # Function to make GraphQL API calls with proper auth header
           function graphql_query() {
-            curl -s -H "Authorization: bearer $GH_TOKEN" -X POST -d "{ \"query\": \"$1\" }" https://api.github.com/graphql
+            curl -s -H "Authorization: Bearer $GITHUB_TOKEN" -H "Content-Type: application/json" -X POST -d "{\"query\": \"$1\"}" https://api.github.com/graphql
           }
+          
+          echo "Token value check (safe display, first 4 chars only): ${GITHUB_TOKEN:0:4}..."
           
           # List organization projects
           echo "Listing organization projects..."
-          PROJECTS_QUERY='
+          PROJECTS_QUERY=$(cat << 'EOF'
             query {
-              organization(login: "'$ORG'") {
+              organization(login: "%ORG%") {
                 projectsV2(first: 10) {
                   nodes {
                     id
@@ -68,7 +70,15 @@ jobs:
                 }
               }
             }
-          '
+EOF
+          )
+          
+          # Replace placeholder with actual variable
+          PROJECTS_QUERY="${PROJECTS_QUERY/\%ORG\%/$ORG}"
+          
+          echo "GraphQL Query:"
+          echo "$PROJECTS_QUERY"
+          
           PROJECTS_RESPONSE=$(graphql_query "$PROJECTS_QUERY")
           echo "Projects response:"
           echo "$PROJECTS_RESPONSE" | jq .
@@ -88,9 +98,9 @@ jobs:
           
           # Get the fields for this project
           echo "Getting project fields..."
-          FIELDS_QUERY='
+          FIELDS_QUERY=$(cat << 'EOF'
             query {
-              node(id: "'$PROJECT_ID'") {
+              node(id: "%PROJECT_ID%") {
                 ... on ProjectV2 {
                   fields(first: 20) {
                     nodes {
@@ -111,7 +121,15 @@ jobs:
                 }
               }
             }
-          '
+EOF
+          )
+          
+          # Replace placeholder with actual variable
+          FIELDS_QUERY="${FIELDS_QUERY/\%PROJECT_ID\%/$PROJECT_ID}"
+          
+          echo "Fields GraphQL Query:"
+          echo "$FIELDS_QUERY"
+          
           FIELDS_RESPONSE=$(graphql_query "$FIELDS_QUERY")
           echo "Fields response:"
           echo "$FIELDS_RESPONSE" | jq .
@@ -170,9 +188,9 @@ jobs:
           ISSUE_NUMBER="${{ github.event.issue.number }}"
           REPO_NAME="${{ github.repository }}"
           
-          ITEMS_QUERY='
+          ITEMS_QUERY=$(cat << 'EOF'
             query {
-              node(id: "'$PROJECT_ID'") {
+              node(id: "%PROJECT_ID%") {
                 ... on ProjectV2 {
                   items(first: 100) {
                     nodes {
@@ -191,7 +209,15 @@ jobs:
                 }
               }
             }
-          '
+EOF
+          )
+          
+          # Replace placeholder with actual variable
+          ITEMS_QUERY="${ITEMS_QUERY/\%PROJECT_ID\%/$PROJECT_ID}"
+          
+          echo "Items GraphQL Query:"
+          echo "$ITEMS_QUERY"
+          
           ITEMS_RESPONSE=$(graphql_query "$ITEMS_QUERY")
           echo "Items response:"
           echo "$ITEMS_RESPONSE" | jq .
@@ -206,18 +232,27 @@ jobs:
           if [ -z "$ITEM_ID" ] || [ "$ITEM_ID" = "null" ]; then
             echo "Issue not found in project. Adding it..."
             
-            ADD_ITEM_MUTATION='
+            ADD_ITEM_MUTATION=$(cat << 'EOF'
               mutation {
                 addProjectV2ItemById(input: {
-                  projectId: "'$PROJECT_ID'",
-                  contentId: "'$ISSUE_ID'"
+                  projectId: "%PROJECT_ID%",
+                  contentId: "%ISSUE_ID%"
                 }) {
                   item {
                     id
                   }
                 }
               }
-            '
+EOF
+            )
+            
+            # Replace placeholders with actual variables
+            ADD_ITEM_MUTATION="${ADD_ITEM_MUTATION/\%PROJECT_ID\%/$PROJECT_ID}"
+            ADD_ITEM_MUTATION="${ADD_ITEM_MUTATION/\%ISSUE_ID\%/$ISSUE_ID}"
+            
+            echo "Add Item GraphQL Mutation:"
+            echo "$ADD_ITEM_MUTATION"
+            
             ADD_ITEM_RESPONSE=$(graphql_query "$ADD_ITEM_MUTATION")
             echo "Add item response:"
             echo "$ADD_ITEM_RESPONSE" | jq .
@@ -234,14 +269,14 @@ jobs:
             if [ -n "$BRANCH_FIELD_ID" ] && [ -n "$BRANCH_OPTION_ID" ]; then
               echo "Updating Branch field..."
               
-              BRANCH_UPDATE_MUTATION='
+              BRANCH_UPDATE_MUTATION=$(cat << 'EOF'
                 mutation {
                   updateProjectV2ItemFieldValue(input: {
-                    projectId: "'$PROJECT_ID'",
-                    itemId: "'$ITEM_ID'",
-                    fieldId: "'$BRANCH_FIELD_ID'",
+                    projectId: "%PROJECT_ID%",
+                    itemId: "%ITEM_ID%",
+                    fieldId: "%FIELD_ID%",
                     value: {
-                      singleSelectOptionId: "'$BRANCH_OPTION_ID'"
+                      singleSelectOptionId: "%OPTION_ID%"
                     }
                   }) {
                     projectV2Item {
@@ -249,7 +284,18 @@ jobs:
                     }
                   }
                 }
-              '
+EOF
+              )
+              
+              # Replace placeholders with actual variables
+              BRANCH_UPDATE_MUTATION="${BRANCH_UPDATE_MUTATION/\%PROJECT_ID\%/$PROJECT_ID}"
+              BRANCH_UPDATE_MUTATION="${BRANCH_UPDATE_MUTATION/\%ITEM_ID\%/$ITEM_ID}"
+              BRANCH_UPDATE_MUTATION="${BRANCH_UPDATE_MUTATION/\%FIELD_ID\%/$BRANCH_FIELD_ID}"
+              BRANCH_UPDATE_MUTATION="${BRANCH_UPDATE_MUTATION/\%OPTION_ID\%/$BRANCH_OPTION_ID}"
+              
+              echo "Branch Update GraphQL Mutation:"
+              echo "$BRANCH_UPDATE_MUTATION"
+              
               BRANCH_UPDATE_RESPONSE=$(graphql_query "$BRANCH_UPDATE_MUTATION")
               echo "Branch update response:"
               echo "$BRANCH_UPDATE_RESPONSE" | jq .
@@ -261,14 +307,14 @@ jobs:
             if [ -n "$VERSION_FIELD_ID" ]; then
               echo "Updating Version field..."
               
-              VERSION_UPDATE_MUTATION='
+              VERSION_UPDATE_MUTATION=$(cat << 'EOF'
                 mutation {
                   updateProjectV2ItemFieldValue(input: {
-                    projectId: "'$PROJECT_ID'",
-                    itemId: "'$ITEM_ID'",
-                    fieldId: "'$VERSION_FIELD_ID'",
+                    projectId: "%PROJECT_ID%",
+                    itemId: "%ITEM_ID%",
+                    fieldId: "%FIELD_ID%",
                     value: {
-                      text: "'$VERSION'"
+                      text: "%TEXT_VALUE%"
                     }
                   }) {
                     projectV2Item {
@@ -276,7 +322,18 @@ jobs:
                     }
                   }
                 }
-              '
+EOF
+              )
+              
+              # Replace placeholders with actual variables
+              VERSION_UPDATE_MUTATION="${VERSION_UPDATE_MUTATION/\%PROJECT_ID\%/$PROJECT_ID}"
+              VERSION_UPDATE_MUTATION="${VERSION_UPDATE_MUTATION/\%ITEM_ID\%/$ITEM_ID}"
+              VERSION_UPDATE_MUTATION="${VERSION_UPDATE_MUTATION/\%FIELD_ID\%/$VERSION_FIELD_ID}"
+              VERSION_UPDATE_MUTATION="${VERSION_UPDATE_MUTATION/\%TEXT_VALUE\%/$VERSION}"
+              
+              echo "Version Update GraphQL Mutation:"
+              echo "$VERSION_UPDATE_MUTATION"
+              
               VERSION_UPDATE_RESPONSE=$(graphql_query "$VERSION_UPDATE_MUTATION")
               echo "Version update response:"
               echo "$VERSION_UPDATE_RESPONSE" | jq .
@@ -289,14 +346,14 @@ jobs:
             if [ -n "$STATUS_FIELD_ID" ] && [ -n "$STATUS_OPTION_ID" ]; then
               echo "Updating Status field..."
               
-              STATUS_UPDATE_MUTATION='
+              STATUS_UPDATE_MUTATION=$(cat << 'EOF'
                 mutation {
                   updateProjectV2ItemFieldValue(input: {
-                    projectId: "'$PROJECT_ID'",
-                    itemId: "'$ITEM_ID'",
-                    fieldId: "'$STATUS_FIELD_ID'",
+                    projectId: "%PROJECT_ID%",
+                    itemId: "%ITEM_ID%",
+                    fieldId: "%FIELD_ID%",
                     value: {
-                      singleSelectOptionId: "'$STATUS_OPTION_ID'"
+                      singleSelectOptionId: "%OPTION_ID%"
                     }
                   }) {
                     projectV2Item {
@@ -304,7 +361,18 @@ jobs:
                     }
                   }
                 }
-              '
+EOF
+              )
+              
+              # Replace placeholders with actual variables
+              STATUS_UPDATE_MUTATION="${STATUS_UPDATE_MUTATION/\%PROJECT_ID\%/$PROJECT_ID}"
+              STATUS_UPDATE_MUTATION="${STATUS_UPDATE_MUTATION/\%ITEM_ID\%/$ITEM_ID}"
+              STATUS_UPDATE_MUTATION="${STATUS_UPDATE_MUTATION/\%FIELD_ID\%/$STATUS_FIELD_ID}"
+              STATUS_UPDATE_MUTATION="${STATUS_UPDATE_MUTATION/\%OPTION_ID\%/$STATUS_OPTION_ID}"
+              
+              echo "Status Update GraphQL Mutation:"
+              echo "$STATUS_UPDATE_MUTATION"
+              
               STATUS_UPDATE_RESPONSE=$(graphql_query "$STATUS_UPDATE_MUTATION")
               echo "Status update response:"
               echo "$STATUS_UPDATE_RESPONSE" | jq .
@@ -316,14 +384,14 @@ jobs:
             if [ -n "$REPO_FIELD_ID" ]; then
               echo "Updating Repository field..."
               
-              REPO_UPDATE_MUTATION='
+              REPO_UPDATE_MUTATION=$(cat << 'EOF'
                 mutation {
                   updateProjectV2ItemFieldValue(input: {
-                    projectId: "'$PROJECT_ID'",
-                    itemId: "'$ITEM_ID'",
-                    fieldId: "'$REPO_FIELD_ID'",
+                    projectId: "%PROJECT_ID%",
+                    itemId: "%ITEM_ID%",
+                    fieldId: "%FIELD_ID%",
                     value: {
-                      text: "'$REPO'"
+                      text: "%TEXT_VALUE%"
                     }
                   }) {
                     projectV2Item {
@@ -331,7 +399,18 @@ jobs:
                     }
                   }
                 }
-              '
+EOF
+              )
+              
+              # Replace placeholders with actual variables
+              REPO_UPDATE_MUTATION="${REPO_UPDATE_MUTATION/\%PROJECT_ID\%/$PROJECT_ID}"
+              REPO_UPDATE_MUTATION="${REPO_UPDATE_MUTATION/\%ITEM_ID\%/$ITEM_ID}"
+              REPO_UPDATE_MUTATION="${REPO_UPDATE_MUTATION/\%FIELD_ID\%/$REPO_FIELD_ID}"
+              REPO_UPDATE_MUTATION="${REPO_UPDATE_MUTATION/\%TEXT_VALUE\%/$REPO}"
+              
+              echo "Repository Update GraphQL Mutation:"
+              echo "$REPO_UPDATE_MUTATION"
+              
               REPO_UPDATE_RESPONSE=$(graphql_query "$REPO_UPDATE_MUTATION")
               echo "Repository update response:"
               echo "$REPO_UPDATE_RESPONSE" | jq .
