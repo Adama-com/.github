@@ -1,46 +1,35 @@
-# Simple YAML Validator
+name: "Customer Version Update"
+description: "Update customer version information"
+title: "[Version]: "
+labels: ["version-update"]
+body:
+  - type: markdown
+    attributes:
+      value: "## Customer Version Update Form"
 
-import yaml
-import sys
+  - type: input
+    id: customer-name
+    attributes:
+      label: "Customer Name"
+      description: "Customer receiving this update"
+      placeholder: "Acme Corp"
+    validations:
+      required: true
 
-def validate_yaml(file_path):
-    try:
-        with open(file_path, 'r') as file:
-            content = file.read()
-            yaml_data = yaml.safe_load(content)
-            print("✅ YAML is valid!")
-            
-            # Print the parsed YAML structure
-            print("\nParsed structure:")
-            print(yaml_data)
-            
-            # Check for common reserved words used as keys
-            reserved_words = ['on', 'yes', 'no', 'true', 'false', 'null', 'off']
-            
-            def check_keys(data, path=""):
-                if isinstance(data, dict):
-                    for key, value in data.items():
-                        if isinstance(key, str) and key.lower() in reserved_words:
-                            print(f"⚠️ Warning: Reserved word '{key}' used as key at {path}")
-                        check_keys(value, f"{path}.{key}" if path else key)
-                elif isinstance(data, list):
-                    for i, item in enumerate(data):
-                        check_keys(item, f"{path}[{i}]")
-            
-            check_keys(yaml_data)
-            
-    except yaml.YAMLError as e:
-        print("❌ YAML is invalid!")
-        print(f"Error: {e}")
-        return False
-    except Exception as e:
-        print(f"Error reading file: {e}")
-        return False
-    
-    return True
+  - type: input
+    id: version-number
+    attributes:
+      label: "Version"
+      description: "Version number"
+      placeholder: "v1.2.3"
+    validations:
+      required: true
 
-if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        print("Usage: python validate_yaml.py <yaml_file>")
-    else:
-        validate_yaml(sys.argv[1])
+  - type: input
+    id: release-date
+    attributes:
+      label: "Date"
+      description: "Release date"
+      placeholder: "YYYY-MM-DD"
+    validations:
+      required: true
