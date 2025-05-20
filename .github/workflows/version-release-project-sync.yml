@@ -1,5 +1,5 @@
 name: Sync Version Release to Project
- 
+
 on:
   issues:
     types: [opened]
@@ -28,7 +28,7 @@ jobs:
           REPO="${{ github.repository }}"
 
           echo "branch=$BRANCH" >> $GITHUB_OUTPUT
-          echo "status=$STATUS" >> $GITHUB_OUTPUT
+          echo "status=$STATUS_LOWER" >> $GITHUB_OUTPUT
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "repository=$REPO" >> $GITHUB_OUTPUT
 
@@ -49,44 +49,39 @@ jobs:
             const status = '${{ steps.parse.outputs.status }}';
             const org = 'Adama-com';
             const projectNumber = 1;
-            const projectData = await github.graphql(`
-            query {
-              organization(login: "${org}") {
-                projectV2(number: ${projectNumber}) {
-                  id
-                  fields(first: 20) {
-                   nodes {
-                     id
-                     name
-                     dataType
-                     __typename
-                     ... on ProjectV2SingleSelectField {
-                       options {
-                         id
-                         name
-                       }
-                     }
-                   }
-                 }
 
-                  items(first: 100) {
-                    nodes {
-                      id
-                      content {
-                        ... on Issue {
-                          title
-                          repository {
-                            nameWithOwner
+            const projectData = await github.graphql(`
+              query {
+                organization(login: "${org}") {
+                  projectV2(number: ${projectNumber}) {
+                    id
+                    fields(first: 20) {
+                      nodes {
+                        id
+                        name
+                        dataType
+                        __typename
+                      }
+                    }
+                    items(first: 100) {
+                      nodes {
+                        id
+                        content {
+                          ... on Issue {
+                            title
+                            repository {
+                              nameWithOwner
+                            }
                           }
                         }
-                      }
-                      fieldValues(first: 20) {
-                        nodes {
-                          __typename
-                          ... on ProjectV2ItemFieldSingleSelectValue {
-                            name
-                            field {
+                        fieldValues(first: 20) {
+                          nodes {
+                            __typename
+                            ... on ProjectV2ItemFieldSingleSelectValue {
                               name
+                              field {
+                                name
+                              }
                             }
                           }
                         }
@@ -95,27 +90,43 @@ jobs:
                   }
                 }
               }
-            }
             `);
-
-
 
             const project = projectData.organization.projectV2;
             const fields = project.fields.nodes;
             const fieldMap = Object.fromEntries(fields.map(f => [f.name, f]));
 
+            // Fetch options separately
+            for (const field of fields) {
+              if (field.__typename === 'ProjectV2SingleSelectField') {
+                const response = await github.graphql(`
+                  query($id: ID!) {
+                    node(id: $id) {
+                      ... on ProjectV2SingleSelectField {
+                        options {
+                          id
+                          name
+                        }
+                      }
+                    }
+                  }
+                `, { id: field.id });
+                field.options = response.node.options;
+              }
+            }
+
             function getOptionId(fieldName, value) {
-            const field = fieldMap[fieldName];
+              const field = fieldMap[fieldName];
               return field?.options?.find(opt => opt.name === value)?.id || null;
             }
 
             const match = project.items.nodes.find(item =>
               item.content?.repository?.nameWithOwner === repo &&
               item.fieldValues.nodes.some(f =>
-              f.__typename === 'ProjectV2ItemFieldSingleSelectValue' &&
-              f.name === branch &&
-              f.field?.name === 'Branch'
-            )
+                f.__typename === 'ProjectV2ItemFieldSingleSelectValue' &&
+                f.name === branch &&
+                f.field?.name === 'Branch'
+              )
             );
 
             async function updateFields(itemId) {
