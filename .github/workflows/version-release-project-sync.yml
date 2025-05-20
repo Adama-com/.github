@@ -50,45 +50,42 @@ jobs:
             const org = 'Adama-com';
             const projectNumber = 1;
             const projectData = await github.graphql(`
-              query {
-                organization(login: "${org}") {
-                  projectV2(number: ${projectNumber}) {
-                    id
-                    fields(first: 20) {
-                      nodes {
-                        id
-                        name
-                        dataType
-                        __typename
-                        ... on ProjectV2SingleSelectFieldConfiguration {
-                          options {
-                            id
-                            name
-                          }
+            query {
+              organization(login: "${org}") {
+                projectV2(number: ${projectNumber}) {
+                  id
+                  fields(first: 20) {
+                    nodes {
+                      id
+                      name
+                      dataType
+                      __typename
+                      options: ... on ProjectV2SingleSelectField {
+                        options {
+                          id
+                          name
                         }
                       }
                     }
-                    items(first: 100) {
-                      nodes {
-                        id
-                        content {
-                          ... on Issue {
-                            title
-                            repository {
-                              nameWithOwner
-                            }
+                  }
+                  items(first: 100) {
+                    nodes {
+                      id
+                      content {
+                        ... on Issue {
+                          title
+                          repository {
+                            nameWithOwner
                           }
                         }
-                        fieldValues(first: 10) {
-                          nodes {
-                            __typename
-                            ... on ProjectV2ItemFieldSingleSelectValue {
+                      }
+                      fieldValues(first: 20) {
+                        nodes {
+                          __typename
+                          ... on ProjectV2ItemFieldSingleSelectValue {
+                            name
+                            field {
                               name
-                              field {
-                                ... on ProjectV2SingleSelectFieldConfiguration {
-                                  name
-                                }
-                              }
                             }
                           }
                         }
@@ -97,7 +94,9 @@ jobs:
                   }
                 }
               }
-            `);
+            }
+          `);
+
 
             const project = projectData.organization.projectV2;
             const fields = project.fields.nodes;
