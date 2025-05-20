@@ -1,35 +1,37 @@
-name: "Customer Version Update"
-description: "Update customer version information"
-title: "[Version]: "
-labels: ["version-update"]
+name: Version Release
+description: Submit a new version release for a specific branch
+title: "[RELEASE] - "
+labels: ["release"]
 body:
-  - type: markdown
+  - type: dropdown
+    id: branch
     attributes:
-      value: "## Customer Version Update Form"
+      label: Branch
+      description: Select the branch this release is for
+      options:
+        - MAF
+        - MAIT
+        - Australia
+    validations:
+      required: true
 
-  - type: input
-    id: customer-name
+  - type: dropdown
+    id: status
     attributes:
-      label: "Customer Name"
-      description: "Customer receiving this update"
-      placeholder: "Acme Corp"
+      label: Status
+      description: Current status of the release
+      options:
+        - Todo
+        - In Progress
+        - Done
     validations:
       required: true
 
   - type: input
-    id: version-number
+    id: version
     attributes:
-      label: "Version"
-      description: "Version number"
-      placeholder: "v1.2.3"
-    validations:
-      required: true
-
-  - type: input
-    id: release-date
-    attributes:
-      label: "Date"
-      description: "Release date"
-      placeholder: "YYYY-MM-DD"
+      label: Version
+      description: Enter the release version (e.g. 1.2.3)
+      placeholder: "1.2.3"
     validations:
       required: true
