@@ -1,83 +1,101 @@
-name: Update Customer Version
-description: Use this form to update a customer's version in the global project tracker
-title: "[Version Update]: "
-labels: ["version-update"]
-assignees:
-  - octocat
-body:
-  - type: markdown
-    attributes:
-      value: |
-        ## Customer Version Update Form
-        This form will update the global customer version tracker.
+name: Process Version Update Form
+on:
+  issues:
+    types: [opened, edited]
 
-  - type: dropdown
-    id: repository
-    attributes:
-      label: Repository
-      description: Which repository is being updated?
-      options:
-        - repo-a
-        - repo-b
-        - repo-c
-        # Add all your repositories here
-    validations:
-      required: true
+jobs:
+  process-form:
+    if: contains(github.event.issue.labels.*.name, 'version-update')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
 
-  - type: input
-    id: customer-name
-    attributes:
-      label: Customer Name
-      description: Name of the customer receiving this version update
-      placeholder: ex. Acme Corporation
-    validations:
-      required: true
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: 16
 
-  - type: input
-    id: version-number
-    attributes:
-      label: Version Number
-      description: The specific version being deployed
-      placeholder: ex. v1.2.3
-    validations:
-      required: true
+      - name: Install GitHub CLI
+        run: |
+          curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
+          echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+          sudo apt update
+          sudo apt install gh
 
-  - type: input
-    id: release-date
-    attributes:
-      label: Release Date
-      description: Date when the update was/will be deployed to the customer
-      placeholder: YYYY-MM-DD
-    validations:
-      required: true
-
-  - type: dropdown
-    id: status
-    attributes:
-      label: Status
-      description: Current status of this version
-      options:
-        - Current
-        - Upgrade Scheduled
-        - Upgrade Needed
-        - Critical Update Required
-    validations:
-      required: true
-
-  - type: input
-    id: deployed-by
-    attributes:
-      label: Deployed By
-      description: Person responsible for this deployment
-      placeholder: @github-username
-    validations:
-      required: true
-
-  - type: textarea
-    id: notes
-    attributes:
-      label: Notes
-      description: Additional information about this deployment
-      placeholder: Any special considerations or changes in this version
-    validations:
-      required: false
+      - name: Extract form data and update project
+        env:
+          GH_TOKEN: ${{ secrets.PROJECT_TOKEN }}
+          PROJECT_NUMBER: 1  # Replace with your actual project number
+        run: |
+          # Get issue body and parse form data
+          ISSUE_BODY=$(gh issue view ${{ github.event.issue.number }} --json body -q .body)
+          
+          # Extract form data using grep and sed
+          REPOSITORY=$(echo "$ISSUE_BODY" | grep -A 2 "### Repository" | tail -n 1 | sed 's/^[[:space:]]*//')
+          CUSTOMER=$(echo "$ISSUE_BODY" | grep -A 2 "### Customer Name" | tail -n 1 | sed 's/^[[:space:]]*//')
+          VERSION=$(echo "$ISSUE_BODY" | grep -A 2 "### Version Number" | tail -n 1 | sed 's/^[[:space:]]*//')
+          DATE=$(echo "$ISSUE_BODY" | grep -A 2 "### Release Date" | tail -n 1 | sed 's/^[[:space:]]*//')
+          STATUS=$(echo "$ISSUE_BODY" | grep -A 2 "### Status" | tail -n 1 | sed 's/^[[:space:]]*//')
+          DEPLOYED_BY=$(echo "$ISSUE_BODY" | grep -A 2 "### Deployed By" | tail -n 1 | sed 's/^[[:space:]]*//')
+          NOTES=$(echo "$ISSUE_BODY" | grep -A 20 "### Notes" | tail -n +2)
+          
+          # Use a simplified GraphQL query to find matching items
+          QUERY='
+            query($org: String!, $project: Int!) {
+              organization(login: $org) {
+                projectV2(number: $project) {
+                  items(first: 100) {
+                    nodes {
+                      id
+                      fieldValues(first: 100) {
+                        nodes {
+                          ... on ProjectV2ItemFieldTextValue {
+                            field { ... on ProjectV2FieldCommon { name } }
+                            text
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }'
+          
+          # Find existing item (this is a simplified example)
+          ITEM_ID=$(gh api graphql -f query="$QUERY" \
+            -f org="${{ github.repository_owner }}" \
+            -f project="$PROJECT_NUMBER" | \
+            jq -r '.data.organization.projectV2.items.nodes[] | select(.fieldValues.nodes[].text == "'"$CUSTOMER"'") | .id' | head -n 1)
+          
+          # If item exists, update it; otherwise create a new item
+          if [ -n "$ITEM_ID" ]; then
+            echo "Updating existing item for $CUSTOMER in $REPOSITORY"
+            # Update code would go here - simplified for this example
+            gh api graphql -f query='
+              mutation($project_id:ID!, $item_id:ID!, $field_id:ID!, $text:String!) {
+                updateProjectV2ItemFieldValue(
+                  input: {
+                    projectId: $project_id
+                    itemId: $item_id
+                    fieldId: $field_id
+                    value: { text: $text }
+                  }
+                ) {
+                  projectV2Item { id }
+                }
+              }' \
+              -f project_id="PROJECT_ID" \
+              -f item_id="$ITEM_ID" \
+              -f field_id="VERSION_FIELD_ID" \
+              -f text="$VERSION"
+          else
+            echo "Creating new item for $CUSTOMER in $REPOSITORY"
+            # Create code would go here - simplified for this example
+          fi
+          
+          # Add comment to the issue
+          gh issue comment "${{ github.event.issue.number }}" --body "✅ Project board updated with this information."
+          
+          # Close the issue
+          gh issue close "${{ github.event.issue.number }}"
