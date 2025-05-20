@@ -39,55 +39,18 @@ jobs:
       - name: Sync with GitHub Project
         if: steps.parse.outputs.status == 'done'
         env:
-          ISSUE_NODE_ID: ${{ github.event.issue.node_id }}
           BRANCH: ${{ steps.parse.outputs.branch }}
           VERSION: ${{ steps.parse.outputs.version }}
           STATUS: ${{ steps.parse.outputs.status }}
           REPO: ${{ steps.parse.outputs.repository }}
-          # Use GITHUB_TOKEN for this workflow
-          GH_TOKEN: ${{ secrets.PROJECTS_PAT }}
+          # This is essential for the GitHub CLI to work
+          TOKEN: ${{ secrets.PROJECTS_PAT }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
         run: |
           echo "Syncing issue to project..."
           
-          # Install the GitHub CLI if needed
-          if ! command -v gh &> /dev/null; then
-            echo "GitHub CLI not found, installing..."
-            curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
-            echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
-            sudo apt update
-            sudo apt install gh
-          fi
-          
-          # First, try to find issue cards in projects for this repo
-          echo "Looking for issue cards..."
-          gh api graphql -f query='
-            query($issueId:ID!) {
-              node(id:$issueId) {
-                ... on Issue {
-                  title
-                  repository {
-                    nameWithOwner
-                  }
-                  projectCards {
-                    nodes {
-                      project {
-                        name
-                        number
-                      }
-                      column {
-                        name
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          ' -F issueId="$ISSUE_NODE_ID" > issue_info.json
-          
-          cat issue_info.json
-          
           # Create a simple text file with the issue details for the project
-          cat > issue_details.md <<EOL
+          cat > issue_details.md << EOF
           # Issue Details
           
           - **Branch:** $BRANCH
@@ -96,16 +59,18 @@ jobs:
           - **Repository:** $REPO
           
           *This card was automatically created by a GitHub Action workflow.*
-          EOL
+          EOF
           
-          # Try using the GitHub CLI to create a project item on all organization projects
-          echo "Trying to add to organization projects..."
+          # Try using curl directly with the REST API
+          echo "Trying to add to organization projects using REST API..."
 
           # Install jq if it's not already installed
           sudo apt-get install -y jq
           
-          # Use custom token to list organization projects
-          PROJECTS_RESPONSE=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
+          # Use token to list organization projects
+          echo "Listing organization projects..."
+          PROJECTS_RESPONSE=$(curl -s \
+            -H "Authorization: token $TOKEN" \
             -H "Accept: application/vnd.github.v3+json" \
             "https://api.github.com/orgs/Adama-com/projects")
             
@@ -116,10 +81,35 @@ jobs:
           PROJECT_IDS=$(echo "$PROJECTS_RESPONSE" | jq -r '.[] | select(.state=="open") | .id')
           
           if [ -z "$PROJECT_IDS" ]; then
-            echo "No open projects found. Creating a note instead."
+            echo "No open projects found, trying to add directly to repository projects..."
             
-            # Create an issue comment instead with the details
-            gh issue comment "${{ github.event.issue.number }}" --body "$(cat issue_details.md)"
+            # Try repository projects instead
+            REPO_PROJECTS_RESPONSE=$(curl -s \
+              -H "Authorization: token $TOKEN" \
+              -H "Accept: application/vnd.github.v3+json" \
+              "https://api.github.com/repos/$REPO/projects")
+              
+            echo "Repository projects response:"
+            echo "$REPO_PROJECTS_RESPONSE" | jq .
+            
+            PROJECT_IDS=$(echo "$REPO_PROJECTS_RESPONSE" | jq -r '.[] | select(.state=="open") | .id')
+          fi
+          
+          if [ -z "$PROJECT_IDS" ]; then
+            echo "No open projects found. Creating issue comment instead."
+            
+            # Create an issue comment with the details using curl
+            echo "Adding comment to issue #$ISSUE_NUMBER..."
+            COMMENT_BODY=$(cat issue_details.md)
+            COMMENT_RESPONSE=$(curl -s -X POST \
+              -H "Authorization: token $TOKEN" \
+              -H "Accept: application/vnd.github.v3+json" \
+              -H "Content-Type: application/json" \
+              "https://api.github.com/repos/$REPO/issues/$ISSUE_NUMBER/comments" \
+              -d "{\"body\": $(echo "$COMMENT_BODY" | jq -sR .)}")
+              
+            echo "Comment response:"
+            echo "$COMMENT_RESPONSE" | jq .
             
             echo "Added details as a comment on the issue."
           else
@@ -130,7 +120,8 @@ jobs:
               echo "Adding note to project $PROJECT_ID..."
               
               # Get columns for this project
-              COLUMNS_RESPONSE=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
+              COLUMNS_RESPONSE=$(curl -s \
+                -H "Authorization: token $TOKEN" \
                 -H "Accept: application/vnd.github.v3+json" \
                 "https://api.github.com/projects/$PROJECT_ID/columns")
                 
@@ -144,12 +135,13 @@ jobs:
                 echo "Adding card to column $COLUMN_ID..."
                 
                 # Create card with note
+                NOTE_CONTENT=$(cat issue_details.md)
                 CARD_RESPONSE=$(curl -s -X POST \
-                  -H "Authorization: Bearer $GH_TOKEN" \
+                  -H "Authorization: token $TOKEN" \
                   -H "Accept: application/vnd.github.v3+json" \
                   -H "Content-Type: application/json" \
                   "https://api.github.com/projects/columns/$COLUMN_ID/cards" \
-                  -d "{\"note\": \"$(cat issue_details.md | sed 's/"/\\"/g' | tr '\n' ' ')\"}")
+                  -d "{\"note\": $(echo "$NOTE_CONTENT" | jq -sR .)}")
                   
                 echo "Card creation response:"
                 echo "$CARD_RESPONSE" | jq .
@@ -165,9 +157,19 @@ jobs:
                 echo "No columns found for project $PROJECT_ID"
               fi
             done
+            
+            # Also add a comment to the issue as a backup
+            echo "Adding comment to issue #$ISSUE_NUMBER as a backup..."
+            COMMENT_BODY=$(cat issue_details.md)
+            COMMENT_RESPONSE=$(curl -s -X POST \
+              -H "Authorization: token $TOKEN" \
+              -H "Accept: application/vnd.github.v3+json" \
+              -H "Content-Type: application/json" \
+              "https://api.github.com/repos/$REPO/issues/$ISSUE_NUMBER/comments" \
+              -d "{\"body\": $(echo "$COMMENT_BODY" | jq -sR .)}")
+              
+            echo "Comment response:"
+            echo "$COMMENT_RESPONSE" | jq .
           fi
-          
-          echo "Also adding details as a comment on the issue for backup..."
-          gh issue comment "${{ github.event.issue.number }}" --body "$(cat issue_details.md)"
           
           echo "Sync completed."
