@@ -36,108 +36,217 @@ jobs:
         if: steps.parse.outputs.status != 'done'
         run: echo "Status is not Done. Exiting."
 
+      - name: Checkout code
+        if: steps.parse.outputs.status == 'done'
+        uses: actions/checkout@v3
+
+      - name: Create GitHub App Token
+        if: steps.parse.outputs.status == 'done'
+        id: generate-token
+        uses: tibdex/github-app-token@v1
+        with:
+          app_id: ${{ secrets.APP_ID }}
+          private_key: ${{ secrets.APP_PRIVATE_KEY }}
+
       - name: Sync with GitHub Project
         if: steps.parse.outputs.status == 'done'
+        env:
+          GITHUB_TOKEN: ${{ steps.generate-token.outputs.token }}
+          BRANCH: ${{ steps.parse.outputs.branch }}
+          VERSION: ${{ steps.parse.outputs.version }}
+          STATUS: ${{ steps.parse.outputs.status }}
+          REPO: ${{ steps.parse.outputs.repository }}
+          ISSUE_ID: ${{ github.event.issue.node_id }}
+          ORG: "Adama-com"
+          # Hardcoded project number - replace with your actual project number
+          PROJECT_NUMBER: "1"
         run: |
-          echo "Using built-in GITHUB_TOKEN instead of custom token"
+          echo "Using GitHub App token for authentication"
           
-          BRANCH="${{ steps.parse.outputs.branch }}"
-          VERSION="${{ steps.parse.outputs.version }}"
-          STATUS="${{ steps.parse.outputs.status }}"
-          REPO="${{ steps.parse.outputs.repository }}"
-          ISSUE_NUMBER="${{ github.event.issue.number }}"
-          ISSUE_TITLE="${{ github.event.issue.title }}"
-          ORG="Adama-com"
-          
-          # First, let's list all projects in the organization
-          echo "Listing organization projects..."
-          
-          ORG_PROJECTS=$(curl -s -X GET \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer ${{ github.token }}" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            "https://api.github.com/orgs/$ORG/projects?per_page=10")
-          
-          echo "Organization projects (REST API):"
-          echo "$ORG_PROJECTS" | jq .
-          
-          # Now try using the default token to query projects via GraphQL
-          PROJECTS_QUERY='{
-            "query": "query { organization(login: \"'$ORG'\") { projectsV2(first: 10) { nodes { id number title } } } }"
+          # Query the project directly using the number (avoid listing projects)
+          PROJECT_QUERY='{
+            "query": "query { organization(login: \"'$ORG'\") { projectV2(number: '$PROJECT_NUMBER') { id title fields(first: 20) { nodes { ... on ProjectV2Field { id name } ... on ProjectV2SingleSelectField { id name options { id name } } } } } } }"
           }'
           
-          echo "GraphQL query: $PROJECTS_QUERY"
+          echo "Project GraphQL query:"
+          echo "$PROJECT_QUERY" | jq .
           
-          PROJECTS_RESPONSE=$(curl -s -X POST \
+          PROJECT_RESPONSE=$(curl -s -X POST \
             -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer ${{ github.token }}" \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
             -H "Content-Type: application/json" \
             "https://api.github.com/graphql" \
-            -d "$PROJECTS_QUERY")
+            -d "$PROJECT_QUERY")
           
-          echo "Projects response (GraphQL):"
-          echo "$PROJECTS_RESPONSE" | jq .
+          echo "Project response:"
+          echo "$PROJECT_RESPONSE" | jq .
           
-          # Try to find the project using REST API instead
-          echo "Looking for projects with 'VersionRelease' in the title..."
+          # Check if we got a valid project
+          PROJECT_ID=$(echo "$PROJECT_RESPONSE" | jq -r '.data.organization.projectV2.id')
+          PROJECT_TITLE=$(echo "$PROJECT_RESPONSE" | jq -r '.data.organization.projectV2.title')
           
-          # Extract project number if available
-          PROJECT_NUMBER=$(echo "$ORG_PROJECTS" | jq -r '.[] | select(.name | contains("VersionRelease")) | .number' | head -n 1)
-          
-          if [ -z "$PROJECT_NUMBER" ]; then
-            echo "No VersionRelease project found. Using first project if available..."
-            PROJECT_NUMBER=$(echo "$ORG_PROJECTS" | jq -r '.[0].number')
-          fi
-          
-          if [ -z "$PROJECT_NUMBER" ]; then
-            echo "No projects found. Please check permissions."
+          if [ -z "$PROJECT_ID" ] || [ "$PROJECT_ID" = "null" ]; then
+            echo "Could not find project with number $PROJECT_NUMBER. Check if the project exists."
             exit 1
           fi
           
-          echo "Using project number: $PROJECT_NUMBER"
+          echo "Found project: $PROJECT_TITLE (ID: $PROJECT_ID)"
           
-          # Get project fields
-          echo "Getting project fields..."
+          # Get field IDs
+          VERSION_FIELD_ID=$(echo "$PROJECT_RESPONSE" | jq -r '.data.organization.projectV2.fields.nodes[] | select(.name=="Current Version") | .id')
+          BRANCH_FIELD_ID=$(echo "$PROJECT_RESPONSE" | jq -r '.data.organization.projectV2.fields.nodes[] | select(.name=="Branch") | .id')
+          STATUS_FIELD_ID=$(echo "$PROJECT_RESPONSE" | jq -r '.data.organization.projectV2.fields.nodes[] | select(.name=="Status") | .id')
+          REPO_FIELD_ID=$(echo "$PROJECT_RESPONSE" | jq -r '.data.organization.projectV2.fields.nodes[] | select(.name=="Repository") | .id')
           
-          PROJECT_FIELDS=$(curl -s -X GET \
+          echo "Field IDs:"
+          echo "Branch: $BRANCH_FIELD_ID"
+          echo "Version: $VERSION_FIELD_ID"
+          echo "Status: $STATUS_FIELD_ID"
+          echo "Repository: $REPO_FIELD_ID"
+          
+          # Get branch options
+          if [ -n "$BRANCH_FIELD_ID" ]; then
+            BRANCH_OPTIONS=$(echo "$PROJECT_RESPONSE" | jq -r '.data.organization.projectV2.fields.nodes[] | select(.name=="Branch") | .options')
+            echo "Branch options: $BRANCH_OPTIONS"
+            
+            if [ "$BRANCH_OPTIONS" != "null" ]; then
+              BRANCH_OPTION_ID=$(echo "$PROJECT_RESPONSE" | jq -r '.data.organization.projectV2.fields.nodes[] | select(.name=="Branch") | .options[] | select(.name=="'$BRANCH'") | .id')
+              echo "Branch option ID for '$BRANCH': $BRANCH_OPTION_ID"
+            fi
+          fi
+          
+          # Get status options
+          if [ -n "$STATUS_FIELD_ID" ]; then
+            STATUS_OPTIONS=$(echo "$PROJECT_RESPONSE" | jq -r '.data.organization.projectV2.fields.nodes[] | select(.name=="Status") | .options')
+            echo "Status options: $STATUS_OPTIONS"
+            
+            if [ "$STATUS_OPTIONS" != "null" ]; then
+              # Convert to lowercase for case-insensitive matching
+              STATUS_LOWER=$(echo "$STATUS" | tr '[:upper:]' '[:lower:]')
+              
+              # Extract all options to find a case-insensitive match
+              echo "$PROJECT_RESPONSE" | jq -r '.data.organization.projectV2.fields.nodes[] | select(.name=="Status") | .options[]' > status_options.json
+              
+              while read option; do
+                option_name=$(echo "$option" | jq -r '.name')
+                option_id=$(echo "$option" | jq -r '.id')
+                option_lower=$(echo "$option_name" | tr '[:upper:]' '[:lower:]')
+                
+                echo "Comparing '$option_lower' with '$STATUS_LOWER'"
+                if [ "$option_lower" = "$STATUS_LOWER" ]; then
+                  echo "STATUS_OPTION_ID=$option_id" >> $GITHUB_ENV
+                  echo "Found status option ID: $option_id for '$option_name'"
+                  break
+                fi
+              done < status_options.json
+            fi
+          fi
+          
+          # Add the issue to the project
+          echo "Adding issue to project..."
+          
+          ADD_ITEM_MUTATION='{
+            "query": "mutation { addProjectV2ItemById(input: { projectId: \"'$PROJECT_ID'\", contentId: \"'$ISSUE_ID'\" }) { item { id } } }"
+          }'
+          
+          echo "Add item mutation:"
+          echo "$ADD_ITEM_MUTATION" | jq .
+          
+          ADD_ITEM_RESPONSE=$(curl -s -X POST \
             -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer ${{ github.token }}" \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
-            "https://api.github.com/projects/$PROJECT_NUMBER/columns")
+            -H "Content-Type: application/json" \
+            "https://api.github.com/graphql" \
+            -d "$ADD_ITEM_MUTATION")
           
-          echo "Project fields:"
-          echo "$PROJECT_FIELDS" | jq .
+          echo "Add item response:"
+          echo "$ADD_ITEM_RESPONSE" | jq .
           
-          # Create a new card for the issue
-          echo "Creating a new card for issue #$ISSUE_NUMBER..."
+          ITEM_ID=$(echo "$ADD_ITEM_RESPONSE" | jq -r '.data.addProjectV2ItemById.item.id')
           
-          # First get the default column id
-          DEFAULT_COLUMN_ID=$(echo "$PROJECT_FIELDS" | jq -r '.[0].id')
+          if [ -z "$ITEM_ID" ] || [ "$ITEM_ID" = "null" ]; then
+            echo "Failed to add item to project. Check the response for errors."
+            exit 1
+          fi
           
-          if [ -n "$DEFAULT_COLUMN_ID" ]; then
-            # Create the card
-            CREATE_CARD=$(curl -s -X POST \
+          echo "Successfully added issue to project. Item ID: $ITEM_ID"
+          
+          # Update fields
+          if [ -n "$VERSION_FIELD_ID" ]; then
+            echo "Updating Version field..."
+            
+            VERSION_UPDATE_MUTATION='{
+              "query": "mutation { updateProjectV2ItemFieldValue(input: { projectId: \"'$PROJECT_ID'\", itemId: \"'$ITEM_ID'\", fieldId: \"'$VERSION_FIELD_ID'\", value: { text: \"'$VERSION'\" } }) { projectV2Item { id } } }"
+            }'
+            
+            curl -s -X POST \
               -H "Accept: application/vnd.github+json" \
-              -H "Authorization: Bearer ${{ github.token }}" \
+              -H "Authorization: Bearer $GITHUB_TOKEN" \
               -H "X-GitHub-Api-Version: 2022-11-28" \
               -H "Content-Type: application/json" \
-              "https://api.github.com/projects/columns/$DEFAULT_COLUMN_ID/cards" \
-              -d "{\"note\":\"Issue #$ISSUE_NUMBER: $ISSUE_TITLE\\nBranch: $BRANCH\\nVersion: $VERSION\\nStatus: $STATUS\\nRepository: $REPO\"}")
+              "https://api.github.com/graphql" \
+              -d "$VERSION_UPDATE_MUTATION" > /dev/null
             
-            echo "Card creation response:"
-            echo "$CREATE_CARD" | jq .
-            
-            CARD_ID=$(echo "$CREATE_CARD" | jq -r '.id')
-            
-            if [ -n "$CARD_ID" ] && [ "$CARD_ID" != "null" ]; then
-              echo "Successfully created card with ID: $CARD_ID"
-              echo "Project sync completed successfully."
-            else
-              echo "Failed to create card. Check permissions."
-              exit 1
-            fi
-          else
-            echo "Could not find a column in the project. Check project structure."
-            exit 1
+            echo "Version field updated."
           fi
+          
+          if [ -n "$BRANCH_FIELD_ID" ] && [ -n "$BRANCH_OPTION_ID" ]; then
+            echo "Updating Branch field..."
+            
+            BRANCH_UPDATE_MUTATION='{
+              "query": "mutation { updateProjectV2ItemFieldValue(input: { projectId: \"'$PROJECT_ID'\", itemId: \"'$ITEM_ID'\", fieldId: \"'$BRANCH_FIELD_ID'\", value: { singleSelectOptionId: \"'$BRANCH_OPTION_ID'\" } }) { projectV2Item { id } } }"
+            }'
+            
+            curl -s -X POST \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer $GITHUB_TOKEN" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              -H "Content-Type: application/json" \
+              "https://api.github.com/graphql" \
+              -d "$BRANCH_UPDATE_MUTATION" > /dev/null
+            
+            echo "Branch field updated."
+          fi
+          
+          # Get STATUS_OPTION_ID from environment if set
+          STATUS_OPTION_ID=${STATUS_OPTION_ID:-""}
+          
+          if [ -n "$STATUS_FIELD_ID" ] && [ -n "$STATUS_OPTION_ID" ]; then
+            echo "Updating Status field with option ID: $STATUS_OPTION_ID"
+            
+            STATUS_UPDATE_MUTATION='{
+              "query": "mutation { updateProjectV2ItemFieldValue(input: { projectId: \"'$PROJECT_ID'\", itemId: \"'$ITEM_ID'\", fieldId: \"'$STATUS_FIELD_ID'\", value: { singleSelectOptionId: \"'$STATUS_OPTION_ID'\" } }) { projectV2Item { id } } }"
+            }'
+            
+            curl -s -X POST \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer $GITHUB_TOKEN" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              -H "Content-Type: application/json" \
+              "https://api.github.com/graphql" \
+              -d "$STATUS_UPDATE_MUTATION" > /dev/null
+            
+            echo "Status field updated."
+          fi
+          
+          if [ -n "$REPO_FIELD_ID" ]; then
+            echo "Updating Repository field..."
+            
+            REPO_UPDATE_MUTATION='{
+              "query": "mutation { updateProjectV2ItemFieldValue(input: { projectId: \"'$PROJECT_ID'\", itemId: \"'$ITEM_ID'\", fieldId: \"'$REPO_FIELD_ID'\", value: { text: \"'$REPO'\" } }) { projectV2Item { id } } }"
+            }'
+            
+            curl -s -X POST \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer $GITHUB_TOKEN" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              -H "Content-Type: application/json" \
+              "https://api.github.com/graphql" \
+              -d "$REPO_UPDATE_MUTATION" > /dev/null
+            
+            echo "Repository field updated."
+          fi
+          
+          echo "Project sync completed successfully."
