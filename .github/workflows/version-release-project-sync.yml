@@ -30,8 +30,6 @@ jobs:
       - name: Sync to VersionReleases project
         if: steps.parse.outputs.status == 'done'
         uses: actions/github-script@v7
-        env:
-          GH_TOKEN: ${{ secrets.PROJECTS_PAT }}
         with:
           github-token: ${{ secrets.PROJECTS_PAT }}
           script: |
