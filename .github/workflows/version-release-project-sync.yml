@@ -50,12 +50,47 @@ jobs:
             const org = 'Adama-com';
             const projectNumber = 1;
             
-            // Step 1: Get project metadata and all fields (basic only, no options)
-            const projectData = await github.graphql(`
+            // Step 1: Get project ID and fields with proper fragment handling
+            const projectQuery = await github.graphql(`
               query {
                 organization(login: "${org}") {
                   projectV2(number: ${projectNumber}) {
                     id
+                    fields(first: 20) {
+                      nodes {
+                        ... on ProjectV2Field {
+                          id
+                          name
+                        }
+                        ... on ProjectV2SingleSelectField {
+                          id
+                          name
+                          options {
+                            id
+                            name
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            `);
+            
+            const project = projectQuery.organization.projectV2;
+            console.log("Project ID:", project.id);
+            
+            // Build field map
+            const fieldMap = {};
+            project.fields.nodes.forEach(field => {
+              fieldMap[field.name] = field;
+            });
+            
+            // Step 2: Find existing item or create new one
+            const itemsQuery = await github.graphql(`
+              query {
+                organization(login: "${org}") {
+                  projectV2(number: ${projectNumber}) {
                     items(first: 100) {
                       nodes {
                         id
@@ -69,22 +104,24 @@ jobs:
                         }
                         fieldValues(first: 20) {
                           nodes {
-                            __typename
                             ... on ProjectV2ItemFieldSingleSelectValue {
-                              name
                               field {
-                                name
+                                ... on ProjectV2SingleSelectField {
+                                  name
+                                }
                               }
+                              name
+                            }
+                            ... on ProjectV2ItemFieldTextValue {
+                              field {
+                                ... on ProjectV2Field {
+                                  name
+                                }
+                              }
+                              text
                             }
                           }
                         }
-                      }
-                    }
-                    fields(first: 20) {
-                      nodes {
-                        id
-                        name
-                        __typename
                       }
                     }
                   }
@@ -92,67 +129,52 @@ jobs:
               }
             `);
             
-            const project = projectData.organization.projectV2;
-            const allFields = project.fields.nodes;
+            const items = itemsQuery.organization.projectV2.items.nodes;
             
-            // Step 2: fetch options for each single-select field
-            for (const field of allFields) {
-              if (field.__typename === 'ProjectV2SingleSelectField') {
-                const result = await github.graphql(`
-                  query ($id: ID!) {
-                    node(id: $id) {
-                      ... on ProjectV2SingleSelectField {
-                        options {
+            const match = items.find(item => {
+              if (!item.content?.repository?.nameWithOwner === repo) return false;
+              
+              const branchValue = item.fieldValues.nodes.find(f => 
+                f.field?.name === 'Branch' && f.name === branch
+              );
+              
+              return !!branchValue;
+            });
+            
+            console.log("Match found:", !!match);
+            
+            // Step 3: Update fields or create new item
+            async function updateFields(itemId) {
+              // Update Branch
+              const branchField = fieldMap['Branch'];
+              if (branchField && branch) {
+                const branchOption = branchField.options?.find(opt => opt.name === branch);
+                if (branchOption) {
+                  await github.graphql(`
+                    mutation($input: UpdateProjectV2ItemFieldValueInput!) {
+                      updateProjectV2ItemFieldValue(input: $input) {
+                        projectV2Item {
                           id
-                          name
                         }
                       }
                     }
-                  }
-                `, { id: field.id });
-                field.options = result.node.options;
-              }
-            }
-
-            function getOptionId(fieldName, value) {
-              const field = fieldMap[fieldName];
-              return field?.options?.find(opt => opt.name === value)?.id || null;
-            }
-
-            const match = project.items.nodes.find(item =>
-              item.content?.repository?.nameWithOwner === repo &&
-              item.fieldValues.nodes.some(f =>
-                f.__typename === 'ProjectV2ItemFieldSingleSelectValue' &&
-                f.name === branch &&
-                f.field?.name === 'Branch'
-              )
-            );
-
-            async function updateFields(itemId) {
-              for (const [fieldName, value] of Object.entries({
-                "Branch": branch,
-                "Current Version": version,
-                "Status": status,
-                "Repository": repo
-              })) {
-                const field = fieldMap[fieldName];
-                if (!field) continue;
-
-                const input = {
-                  projectId: project.id,
-                  itemId: itemId,
-                  fieldId: field.id,
-                  value: {}
-                };
-
-                if (field.dataType === 'SINGLE_SELECT') {
-                  const optionId = getOptionId(fieldName, value);
-                  if (!optionId) continue;
-                  input.value.singleSelectOptionId = optionId;
-                } else if (field.dataType === 'TEXT') {
-                  input.value.text = value;
+                  `, { 
+                    input: {
+                      projectId: project.id,
+                      itemId: itemId,
+                      fieldId: branchField.id,
+                      value: {
+                        singleSelectOptionId: branchOption.id
+                      }
+                    }
+                  });
+                  console.log("Updated Branch field");
                 }
-
+              }
+              
+              // Update Version
+              const versionField = fieldMap['Current Version'];
+              if (versionField && version) {
                 await github.graphql(`
                   mutation($input: UpdateProjectV2ItemFieldValueInput!) {
                     updateProjectV2ItemFieldValue(input: $input) {
@@ -161,13 +183,77 @@ jobs:
                       }
                     }
                   }
-                `, { input });
+                `, { 
+                  input: {
+                    projectId: project.id,
+                    itemId: itemId,
+                    fieldId: versionField.id,
+                    value: {
+                      text: version
+                    }
+                  }
+                });
+                console.log("Updated Version field");
+              }
+              
+              // Update Status
+              const statusField = fieldMap['Status'];
+              if (statusField && status) {
+                const statusOption = statusField.options?.find(opt => 
+                  opt.name.toLowerCase() === status.toLowerCase()
+                );
+                if (statusOption) {
+                  await github.graphql(`
+                    mutation($input: UpdateProjectV2ItemFieldValueInput!) {
+                      updateProjectV2ItemFieldValue(input: $input) {
+                        projectV2Item {
+                          id
+                        }
+                      }
+                    }
+                  `, { 
+                    input: {
+                      projectId: project.id,
+                      itemId: itemId,
+                      fieldId: statusField.id,
+                      value: {
+                        singleSelectOptionId: statusOption.id
+                      }
+                    }
+                  });
+                  console.log("Updated Status field");
+                }
+              }
+              
+              // Update Repository (if it's a field in your project)
+              const repoField = fieldMap['Repository'];
+              if (repoField && repo) {
+                await github.graphql(`
+                  mutation($input: UpdateProjectV2ItemFieldValueInput!) {
+                    updateProjectV2ItemFieldValue(input: $input) {
+                      projectV2Item {
+                        id
+                      }
+                    }
+                  }
+                `, { 
+                  input: {
+                    projectId: project.id,
+                    itemId: itemId,
+                    fieldId: repoField.id,
+                    value: {
+                      text: repo
+                    }
+                  }
+                });
+                console.log("Updated Repository field");
               }
             }
-
+            
+            let itemId;
             if (match) {
               console.log("Item found — updating");
-              await updateFields(match.id);
+              itemId = match.id;
             } else {
               console.log("No match — creating new item");
               const newItem = await github.graphql(`
@@ -182,5 +268,8 @@ jobs:
                   }
                 }
               `);
-              await updateFields(newItem.addProjectV2ItemById.item.id);
+              itemId = newItem.addProjectV2ItemById.item.id;
             }
+            
+            await updateFields(itemId);
+            console.log("Project sync completed successfully");
