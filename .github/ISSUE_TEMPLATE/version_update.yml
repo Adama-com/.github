@@ -14,88 +14,69 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v3
         with:
-          node-version: 16
+          node-version: '16'
 
-      - name: Install GitHub CLI
-        run: |
-          curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
-          echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
-          sudo apt update
-          sudo apt install gh
+      - name: Install dependencies
+        run: npm install @octokit/rest @octokit/graphql
 
-      - name: Extract form data and update project
-        env:
-          GH_TOKEN: ${{ secrets.PROJECT_TOKEN }}
-          PROJECT_NUMBER: 1  # Replace with your actual project number
-        run: |
-          # Get issue body and parse form data
-          ISSUE_BODY=$(gh issue view ${{ github.event.issue.number }} --json body -q .body)
-          
-          # Extract form data using grep and sed
-          REPOSITORY=$(echo "$ISSUE_BODY" | grep -A 2 "### Repository" | tail -n 1 | sed 's/^[[:space:]]*//')
-          CUSTOMER=$(echo "$ISSUE_BODY" | grep -A 2 "### Customer Name" | tail -n 1 | sed 's/^[[:space:]]*//')
-          VERSION=$(echo "$ISSUE_BODY" | grep -A 2 "### Version Number" | tail -n 1 | sed 's/^[[:space:]]*//')
-          DATE=$(echo "$ISSUE_BODY" | grep -A 2 "### Release Date" | tail -n 1 | sed 's/^[[:space:]]*//')
-          STATUS=$(echo "$ISSUE_BODY" | grep -A 2 "### Status" | tail -n 1 | sed 's/^[[:space:]]*//')
-          DEPLOYED_BY=$(echo "$ISSUE_BODY" | grep -A 2 "### Deployed By" | tail -n 1 | sed 's/^[[:space:]]*//')
-          NOTES=$(echo "$ISSUE_BODY" | grep -A 20 "### Notes" | tail -n +2)
-          
-          # Use a simplified GraphQL query to find matching items
-          QUERY='
-            query($org: String!, $project: Int!) {
-              organization(login: $org) {
-                projectV2(number: $project) {
-                  items(first: 100) {
-                    nodes {
-                      id
-                      fieldValues(first: 100) {
-                        nodes {
-                          ... on ProjectV2ItemFieldTextValue {
-                            field { ... on ProjectV2FieldCommon { name } }
-                            text
-                          }
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            }'
-          
-          # Find existing item (this is a simplified example)
-          ITEM_ID=$(gh api graphql -f query="$QUERY" \
-            -f org="${{ github.repository_owner }}" \
-            -f project="$PROJECT_NUMBER" | \
-            jq -r '.data.organization.projectV2.items.nodes[] | select(.fieldValues.nodes[].text == "'"$CUSTOMER"'") | .id' | head -n 1)
-          
-          # If item exists, update it; otherwise create a new item
-          if [ -n "$ITEM_ID" ]; then
-            echo "Updating existing item for $CUSTOMER in $REPOSITORY"
-            # Update code would go here - simplified for this example
-            gh api graphql -f query='
-              mutation($project_id:ID!, $item_id:ID!, $field_id:ID!, $text:String!) {
-                updateProjectV2ItemFieldValue(
-                  input: {
-                    projectId: $project_id
-                    itemId: $item_id
-                    fieldId: $field_id
-                    value: { text: $text }
-                  }
-                ) {
-                  projectV2Item { id }
-                }
-              }' \
-              -f project_id="PROJECT_ID" \
-              -f item_id="$ITEM_ID" \
-              -f field_id="VERSION_FIELD_ID" \
-              -f text="$VERSION"
-          else
-            echo "Creating new item for $CUSTOMER in $REPOSITORY"
-            # Create code would go here - simplified for this example
-          fi
-          
-          # Add comment to the issue
-          gh issue comment "${{ github.event.issue.number }}" --body "✅ Project board updated with this information."
-          
-          # Close the issue
-          gh issue close "${{ github.event.issue.number }}"
+      - name: Process form and update project
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.PROJECT_TOKEN }}
+          script: |
+            const issue = await github.rest.issues.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number
+            });
+            
+            const issueBody = issue.data.body;
+            console.log("Processing issue:", context.issue.number);
+            
+            // Simple parsing - in production you'd want more robust parsing
+            function extractField(body, fieldName) {
+              const regex = new RegExp(`### ${fieldName}\\s*([^#]*)`);
+              const match = body.match(regex);
+              return match ? match[1].trim() : '';
+            }
+            
+            // Extract data from form
+            const repository = extractField(issueBody, 'Repository');
+            const customer = extractField(issueBody, 'Customer Name');
+            const version = extractField(issueBody, 'Version Number');
+            const releaseDate = extractField(issueBody, 'Release Date');
+            const status = extractField(issueBody, 'Status');
+            const deployedBy = extractField(issueBody, 'Deployed By');
+            const notes = extractField(issueBody, 'Notes');
+            
+            console.log(`Extracted data for ${customer} in ${repository}: version ${version}`);
+            
+            // In a real implementation, you would:
+            // 1. Use GraphQL to find the project and item (if exists)
+            // 2. Create or update the item
+            // 3. Add error handling
+            
+            // For this example, we'll just comment on the issue
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: `✅ Processed update request with these details:
+              
+              - Repository: ${repository}
+              - Customer: ${customer}
+              - Version: ${version}
+              - Release Date: ${releaseDate}
+              - Status: ${status}
+              - Deployed By: ${deployedBy}
+              
+              Note: This is a placeholder. The actual project board update would happen here.`
+            });
+            
+            // Close the issue
+            await github.rest.issues.update({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              state: 'closed'
+            });
