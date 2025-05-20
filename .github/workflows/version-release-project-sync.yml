@@ -19,17 +19,42 @@ jobs:
       - name: Parse form fields
         id: parse
         run: |
-          BRANCH=$(echo "$ISSUE_BODY" | grep -A1 '### Branch' | tail -n1 | xargs)
-          STATUS=$(echo "$ISSUE_BODY" | awk '/### Status/{getline; while($0 ~ /^$/) { getline }; print $0 }' | xargs)
+          # Print the raw issue body for debugging
+          echo "Raw issue body:"
+          echo "$ISSUE_BODY"
+          echo "-------------------"
+          
+          # Use simpler pattern matching
+          BRANCH=$(echo "$ISSUE_BODY" | sed -n '/### Branch/{n;n;p;}' | xargs)
+          STATUS=$(echo "$ISSUE_BODY" | sed -n '/### Status/{n;n;p;}' | xargs)
+          VERSION=$(echo "$ISSUE_BODY" | sed -n '/### Version/{n;n;p;}' | xargs)
+          
+          # Fallback with grep if sed fails
+          if [ -z "$BRANCH" ]; then
+            BRANCH=$(echo "$ISSUE_BODY" | grep -A2 '### Branch' | tail -n1)
+          fi
+          
+          if [ -z "$STATUS" ]; then
+            STATUS=$(echo "$ISSUE_BODY" | grep -A2 '### Status' | tail -n1)
+          fi
+          
+          if [ -z "$VERSION" ]; then
+            VERSION=$(echo "$ISSUE_BODY" | grep -A2 '### Version' | tail -n1)
+          fi
+          
+          # Cleanup any whitespace
+          BRANCH=$(echo "$BRANCH" | xargs)
+          STATUS=$(echo "$STATUS" | xargs)
+          VERSION=$(echo "$VERSION" | xargs)
           STATUS_LOWER=$(echo "$STATUS" | tr '[:upper:]' '[:lower:]')
-          VERSION=$(echo "$ISSUE_BODY" | grep -A1 '### Version' | tail -n1 | xargs)
           REPO="${{ github.repository }}"
           
-          # Print the values for debugging
-          echo "Branch: $BRANCH"
-          echo "Status: $STATUS"
-          echo "Version: $VERSION"
-          echo "Repository: $REPO"
+          # Print the extracted values for debugging
+          echo "Extracted values:"
+          echo "Branch: '$BRANCH'"
+          echo "Status: '$STATUS'"
+          echo "Version: '$VERSION'"
+          echo "Repository: '$REPO'"
           
           # Set outputs
           echo "branch=$BRANCH" >> $GITHUB_OUTPUT
@@ -47,13 +72,13 @@ jobs:
         with:
           github-token: ${{ github.token }}
           script: |
-            // Use String() to ensure we get a string even if the value is empty or undefined
-            const branch = String('${{ steps.parse.outputs.branch }}');
-            const version = String('${{ steps.parse.outputs.version }}');
-            const status = String('${{ steps.parse.outputs.status }}');
-            const repo = String('${{ steps.parse.outputs.repository }}');
+            // Directly reference the outputs
+            const branch = '${{ steps.parse.outputs.branch }}';
+            const version = '${{ steps.parse.outputs.version }}';
+            const status = '${{ steps.parse.outputs.status }}';
+            const repo = '${{ steps.parse.outputs.repository }}';
             
-            console.log('Values received:');
+            console.log('Values from step outputs:');
             console.log(`Branch: "${branch}"`);
             console.log(`Version: "${version}"`);
             console.log(`Status: "${status}"`);
@@ -137,7 +162,7 @@ jobs:
             try {
               console.log("Attempting to add to projects via GraphQL...");
               
-              // First, get the organization's projects
+              // First get all projects for the organization
               const projectsQuery = `
                 query {
                   organization(login: "${context.repo.owner}") {
@@ -155,7 +180,6 @@ jobs:
               const projectsResult = await github.graphql(projectsQuery);
               console.log("Projects result:", JSON.stringify(projectsResult, null, 2));
               
-              // If we have projects, try to add the issue to the first one
               if (projectsResult.organization.projectsV2.nodes.length > 0) {
                 const project = projectsResult.organization.projectsV2.nodes[0];
                 console.log(`Found project: ${project.title} (#${project.number})`);
@@ -177,17 +201,53 @@ jobs:
                 const addResult = await github.graphql(addMutation);
                 console.log("Add result:", JSON.stringify(addResult, null, 2));
                 
-                if (addResult.addProjectV2ItemById.item.id) {
+                if (addResult.addProjectV2ItemById && addResult.addProjectV2ItemById.item) {
                   console.log(`Successfully added issue to project ${project.title}`);
                   
-                  // Add a comment mentioning the project
-                  await github.rest.issues.createComment({
-                    owner: context.repo.owner,
-                    repo: context.repo.repo,
-                    issue_number: context.issue.number,
-                    body: `✅ **Success:** This issue has been automatically added to project "${project.title}" (#${project.number}).`
-                  });
+                  // Try to update fields if needed
+                  try {
+                    // First get the fields for this project
+                    const fieldsQuery = `
+                      query {
+                        node(id: "${project.id}") {
+                          ... on ProjectV2 {
+                            fields(first: 20) {
+                              nodes {
+                                ... on ProjectV2Field {
+                                  id
+                                  name
+                                }
+                                ... on ProjectV2SingleSelectField {
+                                  id
+                                  name
+                                  options {
+                                    id
+                                    name
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    `;
+                    
+                    const fieldsResult = await github.graphql(fieldsQuery);
+                    console.log("Fields result:", JSON.stringify(fieldsResult, null, 2));
+                    
+                    // Add a comment mentioning the project
+                    await github.rest.issues.createComment({
+                      owner: context.repo.owner,
+                      repo: context.repo.repo,
+                      issue_number: context.issue.number,
+                      body: `✅ **Success:** This issue has been automatically added to project "${project.title}" (#${project.number}).`
+                    });
+                  } catch (error) {
+                    console.log("Error getting fields:", error.message);
+                  }
                 }
+              } else {
+                console.log("No projects found in organization");
               }
             } catch (error) {
               console.log("Failed to add to project via GraphQL:", error.message);
