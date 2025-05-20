@@ -42,109 +42,309 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.PROJECTS_PAT }}
         with:
+          # Configure the proper token for GitHub Projects API
+          github-token: ${{ secrets.PROJECTS_PAT }}
           script: |
             const repo = '${{ steps.parse.outputs.repository }}';
             const branch = '${{ steps.parse.outputs.branch }}';
             const version = '${{ steps.parse.outputs.version }}';
             const status = '${{ steps.parse.outputs.status }}';
-            const org = 'Adama-com';
-            const projectNumber = 1;
             
-            // Step 1: Get project ID and fields with proper fragment handling
-            const projectQuery = await github.graphql(`
-              query {
-                organization(login: "${org}") {
-                  projectV2(number: ${projectNumber}) {
-                    id
-                    fields(first: 20) {
-                      nodes {
-                        ... on ProjectV2Field {
-                          id
-                          name
-                        }
-                        ... on ProjectV2SingleSelectField {
-                          id
-                          name
-                          options {
-                            id
-                            name
-                          }
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            `);
+            console.log("Finding GitHub Projects...");
             
-            const project = projectQuery.organization.projectV2;
-            console.log("Project ID:", project.id);
-            
-            // Build field map
-            const fieldMap = {};
-            project.fields.nodes.forEach(field => {
-              fieldMap[field.name] = field;
-            });
-            
-            // Step 2: Find existing item or create new one
-            const itemsQuery = await github.graphql(`
-              query {
-                organization(login: "${org}") {
-                  projectV2(number: ${projectNumber}) {
-                    items(first: 100) {
+            // First, let's find all projects the token has access to
+            try {
+              // Try user projects first
+              const userProjectsQuery = await github.graphql(`
+                query {
+                  viewer {
+                    login
+                    projectsV2(first: 10) {
                       nodes {
                         id
-                        content {
-                          ... on Issue {
+                        number
+                        title
+                      }
+                    }
+                  }
+                }
+              `);
+              
+              console.log("Available user projects:", JSON.stringify(userProjectsQuery.viewer.projectsV2.nodes));
+              
+              // If there are user projects, choose the first one or a specific one by title
+              const userProjects = userProjectsQuery.viewer.projectsV2.nodes;
+              const versionReleaseProject = userProjects.find(p => p.title.includes("VersionRelease")) || userProjects[0];
+              
+              if (versionReleaseProject) {
+                console.log(`Using user project: ${versionReleaseProject.title} (${versionReleaseProject.number})`);
+                await processProject(versionReleaseProject.id, "user", userProjectsQuery.viewer.login);
+                return;
+              }
+            } catch (error) {
+              console.log("Error fetching user projects:", error.message);
+            }
+            
+            // Try organization projects if no user projects or user projects failed
+            try {
+              // List organizations the token has access to
+              const orgsQuery = await github.graphql(`
+                query {
+                  viewer {
+                    organizations(first: 10) {
+                      nodes {
+                        login
+                      }
+                    }
+                  }
+                }
+              `);
+              
+              const orgs = orgsQuery.viewer.organizations.nodes;
+              console.log("Organizations with access:", orgs.map(o => o.login));
+              
+              // Check each organization for projects
+              for (const org of orgs) {
+                try {
+                  const orgProjectsQuery = await github.graphql(`
+                    query {
+                      organization(login: "${org.login}") {
+                        projectsV2(first: 10) {
+                          nodes {
+                            id
+                            number
                             title
-                            repository {
-                              nameWithOwner
-                            }
                           }
                         }
-                        fieldValues(first: 20) {
+                      }
+                    }
+                  `);
+                  
+                  const orgProjects = orgProjectsQuery.organization.projectsV2.nodes;
+                  console.log(`Projects in ${org.login}:`, orgProjects.map(p => `${p.title} (#${p.number})`));
+                  
+                  const versionReleaseProject = orgProjects.find(p => p.title.includes("VersionRelease")) || orgProjects[0];
+                  
+                  if (versionReleaseProject) {
+                    console.log(`Using organization project: ${versionReleaseProject.title} (${versionReleaseProject.number}) in ${org.login}`);
+                    await processProject(versionReleaseProject.id, "org", org.login);
+                    return;
+                  }
+                } catch (error) {
+                  console.log(`Error fetching projects for ${org.login}:`, error.message);
+                }
+              }
+            } catch (error) {
+              console.log("Error fetching organizations:", error.message);
+            }
+            
+            console.log("No suitable projects found. Please check that the token has the correct permissions.");
+            
+            // Common function to process a project once we've found it
+            async function processProject(projectId, projectType, ownerLogin) {
+              console.log(`Processing project with ID: ${projectId}`);
+              
+              // Get project fields with proper fragment handling
+              let projectQuery;
+              if (projectType === "org") {
+                projectQuery = await github.graphql(`
+                  query {
+                    organization(login: "${ownerLogin}") {
+                      projectV2(number: ${versionReleaseProject.number}) {
+                        id
+                        fields(first: 20) {
                           nodes {
-                            ... on ProjectV2ItemFieldSingleSelectValue {
-                              field {
-                                ... on ProjectV2SingleSelectField {
-                                  name
-                                }
-                              }
+                            ... on ProjectV2Field {
+                              id
                               name
                             }
-                            ... on ProjectV2ItemFieldTextValue {
-                              field {
-                                ... on ProjectV2Field {
-                                  name
-                                }
+                            ... on ProjectV2SingleSelectField {
+                              id
+                              name
+                              options {
+                                id
+                                name
                               }
-                              text
                             }
                           }
                         }
                       }
                     }
                   }
-                }
+                `);
+              } else {
+                projectQuery = await github.graphql(`
+                  query {
+                    user(login: "${ownerLogin}") {
+                      projectV2(number: ${versionReleaseProject.number}) {
+                        id
+                        fields(first: 20) {
+                          nodes {
+                            ... on ProjectV2Field {
+                              id
+                              name
+                            }
+                            ... on ProjectV2SingleSelectField {
+                              id
+                              name
+                              options {
+                                id
+                                name
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                `);
               }
-            `);
-            
-            const items = itemsQuery.organization.projectV2.items.nodes;
-            
-            const match = items.find(item => {
-              if (!item.content?.repository?.nameWithOwner === repo) return false;
               
-              const branchValue = item.fieldValues.nodes.find(f => 
-                f.field?.name === 'Branch' && f.name === branch
-              );
+              const project = projectType === "org" ? 
+                projectQuery.organization.projectV2 : 
+                projectQuery.user.projectV2;
               
-              return !!branchValue;
-            });
+              console.log("Project fields:", project.fields.nodes.map(f => f.name));
+              
+              // Build field map
+              const fieldMap = {};
+              project.fields.nodes.forEach(field => {
+                fieldMap[field.name] = field;
+              });
+              
+              // Find existing item or create new one
+              let itemsQuery;
+              if (projectType === "org") {
+                itemsQuery = await github.graphql(`
+                  query {
+                    organization(login: "${ownerLogin}") {
+                      projectV2(number: ${versionReleaseProject.number}) {
+                        items(first: 100) {
+                          nodes {
+                            id
+                            content {
+                              ... on Issue {
+                                title
+                                repository {
+                                  nameWithOwner
+                                }
+                              }
+                            }
+                            fieldValues(first: 20) {
+                              nodes {
+                                ... on ProjectV2ItemFieldSingleSelectValue {
+                                  field {
+                                    ... on ProjectV2SingleSelectField {
+                                      name
+                                    }
+                                  }
+                                  name
+                                }
+                                ... on ProjectV2ItemFieldTextValue {
+                                  field {
+                                    ... on ProjectV2Field {
+                                      name
+                                    }
+                                  }
+                                  text
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                `);
+              } else {
+                itemsQuery = await github.graphql(`
+                  query {
+                    user(login: "${ownerLogin}") {
+                      projectV2(number: ${versionReleaseProject.number}) {
+                        items(first: 100) {
+                          nodes {
+                            id
+                            content {
+                              ... on Issue {
+                                title
+                                repository {
+                                  nameWithOwner
+                                }
+                              }
+                            }
+                            fieldValues(first: 20) {
+                              nodes {
+                                ... on ProjectV2ItemFieldSingleSelectValue {
+                                  field {
+                                    ... on ProjectV2SingleSelectField {
+                                      name
+                                    }
+                                  }
+                                  name
+                                }
+                                ... on ProjectV2ItemFieldTextValue {
+                                  field {
+                                    ... on ProjectV2Field {
+                                      name
+                                    }
+                                  }
+                                  text
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                `);
+              }
+              
+              const items = (projectType === "org" ? 
+                itemsQuery.organization.projectV2.items.nodes : 
+                itemsQuery.user.projectV2.items.nodes) || [];
+              
+              const match = items.find(item => {
+                if (!item.content?.repository?.nameWithOwner === repo) return false;
+                
+                const branchValue = item.fieldValues.nodes.find(f => 
+                  f.field?.name === 'Branch' && f.name === branch
+                );
+                
+                return !!branchValue;
+              });
+              
+              console.log("Match found:", !!match);
+              
+              // Update fields or create new item
+              let itemId;
+              if (match) {
+                console.log("Item found — updating");
+                itemId = match.id;
+              } else {
+                console.log("No match — creating new item");
+                const newItemMutation = await github.graphql(`
+                  mutation {
+                    addProjectV2ItemById(input: {
+                      projectId: "${projectId}",
+                      contentId: "${{ github.event.issue.node_id }}"
+                    }) {
+                      item {
+                        id
+                      }
+                    }
+                  }
+                `);
+                itemId = newItemMutation.addProjectV2ItemById.item.id;
+              }
+              
+              // Update fields
+              await updateFields(itemId, project, fieldMap);
+            }
             
-            console.log("Match found:", !!match);
-            
-            // Step 3: Update fields or create new item
-            async function updateFields(itemId) {
+            async function updateFields(itemId, project, fieldMap) {
+              console.log("Updating fields for item:", itemId);
+              
               // Update Branch
               const branchField = fieldMap['Branch'];
               if (branchField && branch) {
@@ -248,28 +448,6 @@ jobs:
                 });
                 console.log("Updated Repository field");
               }
+              
+              console.log("Project sync completed successfully");
             }
-            
-            let itemId;
-            if (match) {
-              console.log("Item found — updating");
-              itemId = match.id;
-            } else {
-              console.log("No match — creating new item");
-              const newItem = await github.graphql(`
-                mutation {
-                  addProjectV2ItemById(input: {
-                    projectId: "${project.id}",
-                    contentId: "${{ github.event.issue.node_id }}"
-                  }) {
-                    item {
-                      id
-                    }
-                  }
-                }
-              `);
-              itemId = newItem.addProjectV2ItemById.item.id;
-            }
-            
-            await updateFields(itemId);
-            console.log("Project sync completed successfully");
