@@ -181,7 +181,7 @@ jobs:
         if: steps.parse.outputs.status == 'done'
         uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          github-token: ${{ github.token }}  # ✅ This is correc
           script: |
             const branch = '${{ steps.parse.outputs.branch }}';
             const version = '${{ steps.parse.outputs.version }}';
