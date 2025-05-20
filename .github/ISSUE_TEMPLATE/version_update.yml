@@ -1,69 +1,46 @@
-name: Process Version Update Form
-on:
-  issues:
-    types: [opened]
+# Simple YAML Validator
 
-jobs:
-  process-form:
-    if: contains(github.event.issue.labels.*.name, 'version-update')
-    runs-on: ubuntu-latest
-    steps:
-      - name: Process form and update project
-        uses: actions/github-script@v6
-        with:
-          github-token: ${{ secrets.PROJECT_TOKEN }}
-          script: |
-            // Get the current repository name
-            const repository = context.repo.repo;
-            console.log(`Processing form from repository: ${repository}`);
+import yaml
+import sys
+
+def validate_yaml(file_path):
+    try:
+        with open(file_path, 'r') as file:
+            content = file.read()
+            yaml_data = yaml.safe_load(content)
+            print("✅ YAML is valid!")
             
-            const issue = await github.rest.issues.get({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number
-            });
+            # Print the parsed YAML structure
+            print("\nParsed structure:")
+            print(yaml_data)
             
-            const issueBody = issue.data.body;
+            # Check for common reserved words used as keys
+            reserved_words = ['on', 'yes', 'no', 'true', 'false', 'null', 'off']
             
-            // Function to extract fields from the issue body
-            function extractField(body, fieldName) {
-              const regex = new RegExp(`### ${fieldName}\\s*([^#]*)`);
-              const match = body.match(regex);
-              return match ? match[1].trim() : '';
-            }
+            def check_keys(data, path=""):
+                if isinstance(data, dict):
+                    for key, value in data.items():
+                        if isinstance(key, str) and key.lower() in reserved_words:
+                            print(f"⚠️ Warning: Reserved word '{key}' used as key at {path}")
+                        check_keys(value, f"{path}.{key}" if path else key)
+                elif isinstance(data, list):
+                    for i, item in enumerate(data):
+                        check_keys(item, f"{path}[{i}]")
             
-            // Extract data from form
-            const customer = extractField(issueBody, 'Customer Name');
-            const version = extractField(issueBody, 'Version Number');
-            const releaseDate = extractField(issueBody, 'Release Date');
-            const status = extractField(issueBody, 'Status');
-            const deployedBy = extractField(issueBody, 'Deployed By');
-            const notes = extractField(issueBody, 'Notes');
+            check_keys(yaml_data)
             
-            console.log(`Extracted data for ${customer} in ${repository}: version ${version}`);
-            
-            // Update your project here (implementation depends on your project structure)
-            // ...
-            
-            // Comment on the issue with confirmation
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-              body: `✅ Processed version update for **${customer}** in repository **${repository}**:
-              
-              - Version: ${version}
-              - Release Date: ${releaseDate}
-              - Status: ${status}
-              - Deployed By: ${deployedBy}
-              
-              The global project board has been updated with this information.`
-            });
-            
-            // Close the issue
-            await github.rest.issues.update({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-              state: 'closed'
-            });
+    except yaml.YAMLError as e:
+        print("❌ YAML is invalid!")
+        print(f"Error: {e}")
+        return False
+    except Exception as e:
+        print(f"Error reading file: {e}")
+        return False
+    
+    return True
+
+if __name__ == "__main__":
+    if len(sys.argv) != 2:
+        print("Usage: python validate_yaml.py <yaml_file>")
+    else:
+        validate_yaml(sys.argv[1])
