@@ -70,15 +70,11 @@ jobs:
                             __typename
                             ... on ProjectV2ItemFieldSingleSelectValue {
                               name
-                              field {
-                                name
-                              }
+                              field { name }
                             }
                             ... on ProjectV2ItemFieldTextValue {
                               text
-                              field {
-                                name
-                              }
+                              field { name }
                             }
                           }
                         }
@@ -177,11 +173,11 @@ jobs:
               await updateItem(newItem.addProjectV2ItemById.item.id);
             }
 
-      - name: Add summary + labels
+      - name: Add summary and labels
         if: steps.parse.outputs.status == 'done'
         uses: actions/github-script@v7
         with:
-          github-token: ${{ github.token }}  # ✅ This is correc
+          github-token: ${{ github.token }}
           script: |
             const branch = '${{ steps.parse.outputs.branch }}';
             const version = '${{ steps.parse.outputs.version }}';
